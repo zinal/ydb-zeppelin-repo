@@ -101,9 +101,10 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
         fs.moveFile(noteId, notePath, newNotePath);
     }
 
+    @Override
     public void move(String folderPath, String newFolderPath,
               AuthenticationInfo subject) throws IOException {
-
+        fs.moveFolder(folderPath, newFolderPath);
     }
 
     @Override

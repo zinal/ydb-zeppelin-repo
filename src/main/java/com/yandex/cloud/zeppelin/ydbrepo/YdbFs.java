@@ -51,7 +51,16 @@ public class YdbFs implements AutoCloseable {
     private final String queryUpsertBytes;
     private final String queryUpsertFolder;
     private final String queryMoveFile;
+    private final String queryMoveFolder;
 
+    /**
+     * Initializing constructor.
+     *
+     * @param url Database connection URL as `grpcs://host:port?database=/Root/dbname`
+     * @param authMode Authentication mode
+     * @param authData Authentication data, depending on the mode chosen
+     * @param baseDir Database schema for the tables
+     */
     public YdbFs(String url, AuthMode authMode, String authData, String baseDir) {
         GrpcTransportBuilder gtb = GrpcTransport.forConnectionString(url);
         switch (authMode) {
@@ -81,6 +90,7 @@ public class YdbFs implements AutoCloseable {
         this.queryUpsertBytes = buildUpsertBytes(baseDir);
         this.queryUpsertFolder = buildUpsertFolder(baseDir);
         this.queryMoveFile = buildMoveFile(baseDir);
+        this.queryMoveFolder = buildMoveFolder(baseDir);
     }
 
     @Override
@@ -97,6 +107,11 @@ public class YdbFs implements AutoCloseable {
         }
     }
 
+    /**
+     * List all folders stored
+     *
+     * @return Mapping folder ids to folder descriptions.
+     */
     public Map<String, Folder> listFolders() {
         final Map<String, Folder> m = new HashMap<>();
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
@@ -118,6 +133,11 @@ public class YdbFs implements AutoCloseable {
         return m;
     }
 
+    /**
+     * List all files used.
+     *
+     * @return Mapping file ids to file descriptions.
+     */
     public Map<String, File> listFiles() {
         final Map<String, File> m = new HashMap<>();
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
@@ -141,10 +161,21 @@ public class YdbFs implements AutoCloseable {
         return m;
     }
 
+    /**
+     * Obtain the complete listing of all objects, including files and folders.
+     *
+     * @return Files and folders descriptions and their hierarchy.
+     */
     public FullList listAll() {
         return new FullList(listFolders(), listFiles()).fill();
     }
 
+    /**
+     * Read the current file's data.
+     *
+     * @param id File id
+     * @return File data, or null if the file does not exist.
+     */
     public byte[] readFile(String id) {
         final List<byte[]> data = new ArrayList<>();
         final PrimitiveValue vid = PrimitiveValue.newText(id);
@@ -200,6 +231,20 @@ public class YdbFs implements AutoCloseable {
                 + "ORDER BY b.pos LIMIT $limit", baseDir);
     }
 
+    /**
+     * Save the file.
+     * Overwrites the existing files.
+     * For existing files, path specified is ignored (only id is used).
+     * For new files, the folders are created as needed according to path value.
+     * If the current version is frozen by snapshot, new version is created,
+     * otherwise the current version is replaced.
+     *
+     * @param fid File id
+     * @param path File path, for new files
+     * @param author Author writing the file
+     * @param data File data
+     * @return true, if new file was created, false if the existing file was overwritten
+     */
     public boolean saveFile(String fid, String path, String author, byte[] data) {
         // Compression moved out of transaction
         final List<byte[]> compressed = blockCompress(data);
@@ -246,6 +291,14 @@ public class YdbFs implements AutoCloseable {
                 + "INNER JOIN zver v ON v.vid=f.vid", baseDir);
     }
 
+    /**
+     * Rename and move the existing file with the specified id to the new location.
+     * The destination folders are created as necessary.
+     *
+     * @param fid File id
+     * @param oldPath Current file path
+     * @param newPath New file path
+     */
     public void moveFile(String fid, String oldPath, String newPath) {
         final Path pNewFile = new Path(newPath);
         final Path pNewDir = new Path(pNewFile, 1);
@@ -276,6 +329,48 @@ public class YdbFs implements AutoCloseable {
                 + "DECLARE $fname AS Utf8;\n"
                 + "UPSERT INTO zfile (fid, fparent, fname) "
                 + "VALUES ($fid, $fparent, $fname)", baseDir);
+    }
+
+    /**
+     * Rename and move the existing folder to the specified location.
+     * The destination folders are created as necessary.
+     * All the subobjects of the moved folder will have the new paths.
+     *
+     * @param oldFolderPath Current folder path
+     * @param newFolderPath Desired new folder path
+     */
+    public void moveFolder(String oldFolderPath, String newFolderPath) {
+        final Path pOldFolder = new Path(oldFolderPath);
+        final Path pNewFolder = new Path(newFolderPath);
+        final Path pNewContainer = new Path(pNewFolder, 1);
+
+        final TxControl tx = TxControl.serializableRw();
+        retryContext.supplyResult(session -> {
+            String srcId = locateFolder(session, tx, pOldFolder);
+            if (srcId==null) {
+                throw new RuntimeException("Path not found: " + oldFolderPath);
+            }
+            String dstId = createFolder(session, tx, pNewContainer);
+            moveFolder(session, tx, srcId, dstId, pNewFolder.tail());
+            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+        }).join().getValue();
+    }
+
+    private void moveFolder(Session session, TxControl tx, String srcId, String dstId, String name) {
+        Params params = Params.of(
+                "$srcId", PrimitiveValue.newText(srcId),
+                "$dstId", PrimitiveValue.newText(dstId),
+                "$name", PrimitiveValue.newText(name));
+        session.executeDataQuery(queryMoveFolder, tx, params).join().getValue();
+    }
+
+    private static String buildMoveFolder(String baseDir) {
+        return String.format("PRAGMA TablePathPrefix('%s');\n"
+                + "DECLARE $srcId AS Utf8;\n"
+                + "DECLARE $dstId AS Utf8;\n"
+                + "DECLARE $name AS Utf8;\n"
+                + "UPSERT INTO zdir (did, dparent, dname) "
+                + "VALUES ($srcId, $dstId, $name)", baseDir);
     }
 
     private String locateFolder(Session session, TxControl tx, Path path) {
@@ -509,10 +604,25 @@ public class YdbFs implements AutoCloseable {
 
     }
 
+    /**
+     * Authentication mode
+     */
     public static enum AuthMode {
+        /**
+         * Cloud compute instance metadata
+         */
         METADATA,
+        /**
+         * Service account key file, path to the file
+         */
         SAKEY,
+        /**
+         * Static credentials, username:password
+         */
         STATIC,
+        /**
+         * Anonymous
+         */
         NONE,
     }
 
