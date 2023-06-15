@@ -7,10 +7,14 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.Stack;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -27,7 +31,10 @@ import tech.ydb.table.query.Params;
 import tech.ydb.table.result.ResultSetReader;
 import tech.ydb.table.settings.ReadTableSettings;
 import tech.ydb.table.transaction.TxControl;
+import tech.ydb.table.values.Value;
+import tech.ydb.table.values.ListValue;
 import tech.ydb.table.values.PrimitiveValue;
+import tech.ydb.table.values.StructValue;
 
 /**
  * Basic CRUD operations for files and folders stored in YDB.
@@ -41,18 +48,7 @@ public class YdbFs implements AutoCloseable {
     private final GrpcTransport transport;
     private final TableClient tableClient;
     private final SessionRetryContext retryContext;
-
-    private final String queryReadFile;
-    private final String queryCheckFile;
-    private final String queryFindFolder;
-    private final String queryUpsertFile;
-    private final String queryCleanupVersion;
-    private final String queryUpsertVersion;
-    private final String queryUpsertBytes;
-    private final String queryUpsertFolder;
-    private final String queryMoveFile;
-    private final String queryMoveFolder;
-    private final String queryDeleteFile;
+    private final Queries query;
 
     /**
      * Initializing constructor.
@@ -82,17 +78,7 @@ public class YdbFs implements AutoCloseable {
         tableClient = TableClient.newClient(transport).sessionPoolSize(0, 16).build();
         retryContext = SessionRetryContext.create(tableClient).build();
         this.baseDir = baseDir;
-        this.queryReadFile = buildReadFile(baseDir);
-        this.queryCheckFile = buildCheckFile(baseDir);
-        this.queryFindFolder = buildFindFolder(baseDir);
-        this.queryUpsertFile = buildUpsertFile(baseDir);
-        this.queryCleanupVersion = buildCleanupVersion(baseDir);
-        this.queryUpsertVersion = buildUpsertVersion(baseDir);
-        this.queryUpsertBytes = buildUpsertBytes(baseDir);
-        this.queryUpsertFolder = buildUpsertFolder(baseDir);
-        this.queryMoveFile = buildMoveFile(baseDir);
-        this.queryMoveFolder = buildMoveFolder(baseDir);
-        this.queryDeleteFile = buildDeleteFile(baseDir);
+        this.query = new Queries(baseDir);
     }
 
     @Override
@@ -191,7 +177,7 @@ public class YdbFs implements AutoCloseable {
             do {
                 Params params = Params.of("$fid", vid, "$limit", vlimit,
                         "$pos", PrimitiveValue.newInt32(pos[0]));
-                count = session.executeDataQuery(queryReadFile, tx, params)
+                count = session.executeDataQuery(query.readFile, tx, params)
                         .thenApply(Result::getValue)
                         .thenApply(result -> {
                             int localCount = 0;
@@ -272,7 +258,7 @@ public class YdbFs implements AutoCloseable {
 
     private File locateFile(Session session, TxControl tx, String fid) {
         Params params = Params.of("$fid", PrimitiveValue.newText(fid));
-        ResultSetReader rsr = session.executeDataQuery(queryCheckFile, tx, params)
+        ResultSetReader rsr = session.executeDataQuery(query.checkFile, tx, params)
                 .thenApply(Result::getValue)
                 .thenApply(result -> result.getResultSet(0)).join();
         if (! rsr.next() )
@@ -321,7 +307,7 @@ public class YdbFs implements AutoCloseable {
                 "$fid", PrimitiveValue.newText(fid),
                 "$fparent", PrimitiveValue.newText(fparent),
                 "$fname", PrimitiveValue.newText(fname));
-        session.executeDataQuery(queryMoveFile, tx, params).join().getValue();
+        session.executeDataQuery(query.moveFile, tx, params).join().getValue();
     }
 
     private static String buildMoveFile(String baseDir) {
@@ -363,7 +349,7 @@ public class YdbFs implements AutoCloseable {
                 "$srcId", PrimitiveValue.newText(srcId),
                 "$dstId", PrimitiveValue.newText(dstId),
                 "$name", PrimitiveValue.newText(name));
-        session.executeDataQuery(queryMoveFolder, tx, params).join().getValue();
+        session.executeDataQuery(query.moveFolder, tx, params).join().getValue();
     }
 
     private static String buildMoveFolder(String baseDir) {
@@ -381,7 +367,7 @@ public class YdbFs implements AutoCloseable {
         for (String dname : path.entries) {
             Params params = Params.of("$dname", PrimitiveValue.newText(dname),
                     "$dparent", PrimitiveValue.newText(dparent));
-            rsr = session.executeDataQuery(queryFindFolder, tx, params)
+            rsr = session.executeDataQuery(query.findFolder, tx, params)
                     .thenApply(Result::getValue)
                     .thenApply(result -> result.getResultSet(0)).join();
             if (! rsr.next()) {
@@ -400,7 +386,7 @@ public class YdbFs implements AutoCloseable {
             if (exists) {
                 Params params = Params.of("$dname", PrimitiveValue.newText(dname),
                         "$dparent", PrimitiveValue.newText(dparent));
-                rsr = session.executeDataQuery(queryFindFolder, tx, params)
+                rsr = session.executeDataQuery(query.findFolder, tx, params)
                         .thenApply(Result::getValue)
                         .thenApply(result -> result.getResultSet(0)).join();
                 if (rsr.next()) {
@@ -415,7 +401,7 @@ public class YdbFs implements AutoCloseable {
                         "$did", PrimitiveValue.newText(did),
                         "$dname", PrimitiveValue.newText(dname),
                         "$dparent", PrimitiveValue.newText(dparent));
-                session.executeDataQuery(queryUpsertFolder, tx, params).join().getValue();
+                session.executeDataQuery(query.upsertFolder, tx, params).join().getValue();
             }
         }
         return dparent;
@@ -443,17 +429,21 @@ public class YdbFs implements AutoCloseable {
      *
      * @param fid The file id to be removed.
      * @param path Path to the file to be removed.
+     * @return true, if the file was actually deleted, false otherwise (only when path==null)
      */
-    public void removeFile(String fid, String path) {
+    public boolean removeFile(String fid, String path) {
         final TxControl tx = TxControl.serializableRw();
-        retryContext.supplyResult(session -> {
+        return retryContext.supplyResult(session -> {
             File file = locateFile(session, tx, fid);
             if (file==null) {
-                throw new RuntimeException("Path not found: " + path);
+                if (path!=null) {
+                    throw new RuntimeException("Path not found: " + path);
+                }
+                return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
             }
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid));
-            session.executeDataQuery(queryDeleteFile, tx, params).join().getValue();
+            session.executeDataQuery(query.deleteFile, tx, params).join().getValue();
             return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
         }).join().getValue();
     }
@@ -480,7 +470,96 @@ public class YdbFs implements AutoCloseable {
      * @param folderPath The path to folder which needs to be removed.
      */
     public void removeFolder(String folderPath) {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        final Path path = new Path(folderPath);
+        // Collect files and subfolders.
+        final Set<String> files = new HashSet<>();
+        final List<String> folders = new ArrayList<>();
+        retryContext.supplyResult(session -> {
+            final TxControl tx = TxControl.onlineRo();
+            String did = locateFolder(session, tx, path);
+            if (did==null) {
+                throw new RuntimeException("Path not found: " + folderPath);
+            }
+            final Stack<String> work = new Stack<>();
+            work.push(did);
+            while (! work.empty()) {
+                String curDir = work.pop();
+                folders.add(curDir);
+                files.addAll(listFiles(session, tx, curDir));
+                for (String subDir : listFolders(session, tx, curDir)) {
+                    work.push(subDir);
+                }
+            }
+            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+        }).join().getValue();
+        // Dropping files one by one, file per transaction (slow! but safer)
+        for (String fid : files) {
+            removeFile(fid, null);
+        }
+        // Batch drop folders.
+        Value<?>[] folderIds = folders.stream()
+                .filter(value -> (value==null || value.length()==0 || "/".equals(value)))
+                .map(v -> (Value<?>)(StructValue.of("did", PrimitiveValue.newText(v))))
+                .collect(Collectors.toCollection(ArrayList::new))
+                .toArray(new Value<?>[0]);
+        Params params = Params.of("$values", ListValue.of(folderIds));
+        retryContext.supplyResult(session -> {
+            final TxControl tx = TxControl.serializableRw();
+            session.executeDataQuery(query.dropFolders, tx, params).join().getValue();
+            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+        }).join().getValue();
+    }
+
+    private static String buildDropFolders(String baseDir) {
+        return String.format("PRAGMA TablePathPrefix('%s');\n"
+                + "DECLARE $values AS List<Struct<did:Utf8>>;\n"
+                + "$q=(SELECT d.did FROM AS_TABLE($values) AS v "
+                + "    INNER JOIN zdir d ON v.did=d.did);"
+                + "DELETE FROM zdir ON SELECT * FROM $q;", baseDir);
+    }
+
+    public List<String> listFolders(Session session, TxControl tx, String did) {
+        final List<String> retval = new ArrayList<>();
+        Params params = Params.of(
+                "$did", PrimitiveValue.newText(did));
+        session.executeDataQuery(query.listFolders, tx, params)
+                .thenApply(Result::getValue)
+                .thenApply(result -> {
+                    ResultSetReader rsr = result.getResultSet(0);
+                    while (rsr.next()) {
+                        retval.add(rsr.getColumn(0).getText());
+                    }
+                    return true;
+                });
+        return retval;
+    }
+
+    private static String buildListFolders(String baseDir) {
+        return String.format("PRAGMA TablePathPrefix('%s');\n"
+                + "DECLARE $did AS Utf8;\n"
+                + "SELECT did FROM zdir VIEW naming WHERE dparent=$did;", baseDir);
+    }
+
+    public List<String> listFiles(Session session, TxControl tx, String did) {
+        final List<String> retval = new ArrayList<>();
+        Params params = Params.of(
+                "$did", PrimitiveValue.newText(did));
+        session.executeDataQuery(query.listFiles, tx, params)
+                .thenApply(Result::getValue)
+                .thenApply(result -> {
+                    ResultSetReader rsr = result.getResultSet(0);
+                    while (rsr.next()) {
+                        retval.add(rsr.getColumn(0).getText());
+                    }
+                    return true;
+                });
+        return retval;
+    }
+    
+    private static String buildListFiles(String baseDir) {
+        return String.format("PRAGMA TablePathPrefix('%s');\n"
+                + "DECLARE $did AS Utf8;\n"
+                + "SELECT fid FROM zfile VIEW naming WHERE fparent=$did;", baseDir);
     }
 
     private static AuthProvider makeStaticAuthProvider(String authData) {
@@ -605,7 +684,7 @@ public class YdbFs implements AutoCloseable {
                     "$fname", PrimitiveValue.newText(myPath.tail()),
                     "$vid", PrimitiveValue.newText(myVid)
             );
-            session.executeDataQuery(queryUpsertFile, tx, params).join().getValue();
+            session.executeDataQuery(query.upsertFile, tx, params).join().getValue();
         }
 
         private String createVersion(List<byte[]> data) {
@@ -624,7 +703,7 @@ public class YdbFs implements AutoCloseable {
             Params params = Params.of(
                     "$vid", PrimitiveValue.newText(vid)
             );
-            session.executeDataQuery(queryCleanupVersion, tx, params).join().getValue();
+            session.executeDataQuery(query.cleanupVersion, tx, params).join().getValue();
         }
 
         private void upsertVersion(List<byte[]> data) {
@@ -636,7 +715,7 @@ public class YdbFs implements AutoCloseable {
                     "$author", PrimitiveValue.newText(author),
                     "$message", PrimitiveValue.newText(message)
             );
-            session.executeDataQuery(queryUpsertVersion, tx, params).join().getValue();
+            session.executeDataQuery(query.upsertVersion, tx, params).join().getValue();
             int pos = 0;
             for (byte[] b : data) {
                 params = Params.of(
@@ -645,10 +724,44 @@ public class YdbFs implements AutoCloseable {
                         "$val", PrimitiveValue.newBytes(b)
                 );
                 // TODO: batch upsert
-                session.executeDataQuery(queryUpsertBytes, tx, params).join().getValue();
+                session.executeDataQuery(query.upsertBytes, tx, params).join().getValue();
             }
         }
+    }
 
+    private static class Queries {
+
+        final String readFile;
+        final String checkFile;
+        final String findFolder;
+        final String upsertFile;
+        final String cleanupVersion;
+        final String upsertVersion;
+        final String upsertBytes;
+        final String upsertFolder;
+        final String moveFile;
+        final String moveFolder;
+        final String deleteFile;
+        final String listFolders;
+        final String listFiles;
+        final String dropFolders;
+
+        Queries(String baseDir) {
+            this.readFile = buildReadFile(baseDir);
+            this.checkFile = buildCheckFile(baseDir);
+            this.findFolder = buildFindFolder(baseDir);
+            this.upsertFile = buildUpsertFile(baseDir);
+            this.cleanupVersion = buildCleanupVersion(baseDir);
+            this.upsertVersion = buildUpsertVersion(baseDir);
+            this.upsertBytes = buildUpsertBytes(baseDir);
+            this.upsertFolder = buildUpsertFolder(baseDir);
+            this.moveFile = buildMoveFile(baseDir);
+            this.moveFolder = buildMoveFolder(baseDir);
+            this.deleteFile = buildDeleteFile(baseDir);
+            this.listFolders = buildListFolders(baseDir);
+            this.listFiles = buildListFiles(baseDir);
+            this.dropFolders = buildDropFolders(baseDir);
+        }
     }
 
     /**
