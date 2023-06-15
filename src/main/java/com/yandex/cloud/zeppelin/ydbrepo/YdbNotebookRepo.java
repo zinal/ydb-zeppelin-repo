@@ -109,12 +109,12 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public void remove(String noteId, String notePath, AuthenticationInfo subject) throws IOException {
-
+        fs.removeFile(noteId, notePath);
     }
 
     @Override
     public void remove(String folderPath, AuthenticationInfo subject) throws IOException {
-
+        fs.removeFolder(folderPath);
     }
 
     @Override

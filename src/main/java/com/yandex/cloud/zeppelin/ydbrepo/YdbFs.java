@@ -52,6 +52,7 @@ public class YdbFs implements AutoCloseable {
     private final String queryUpsertFolder;
     private final String queryMoveFile;
     private final String queryMoveFolder;
+    private final String queryDeleteFile;
 
     /**
      * Initializing constructor.
@@ -91,6 +92,7 @@ public class YdbFs implements AutoCloseable {
         this.queryUpsertFolder = buildUpsertFolder(baseDir);
         this.queryMoveFile = buildMoveFile(baseDir);
         this.queryMoveFolder = buildMoveFolder(baseDir);
+        this.queryDeleteFile = buildDeleteFile(baseDir);
     }
 
     @Override
@@ -436,6 +438,51 @@ public class YdbFs implements AutoCloseable {
                 + "VALUES($did,$dname,$dparent);", baseDir);
     }
 
+    /**
+     * Remove the specified file.
+     *
+     * @param fid The file id to be removed.
+     * @param path Path to the file to be removed.
+     */
+    public void removeFile(String fid, String path) {
+        final TxControl tx = TxControl.serializableRw();
+        retryContext.supplyResult(session -> {
+            File file = locateFile(session, tx, fid);
+            if (file==null) {
+                throw new RuntimeException("Path not found: " + path);
+            }
+            Params params = Params.of(
+                    "$fid", PrimitiveValue.newText(fid));
+            session.executeDataQuery(queryDeleteFile, tx, params).join().getValue();
+            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+        }).join().getValue();
+    }
+
+    private static String buildDeleteFile(String baseDir) {
+        return String.format("PRAGMA TablePathPrefix('%s');\n"
+                + "DECLARE $fid AS Utf8;\n"
+                + "$qfile=(SELECT fid FROM zfile WHERE fid=$fid);\n"
+                + "$qver=(SELECT fid, vid FROM zver WHERE fid=$fid);\n"
+                + "$qbytes=(\n"
+                + "  SELECT b.vid, b.pos \n"
+                + "  FROM $qver v \n"
+                + "  INNER JOIN zbytes b ON b.vid=v.vid);\n"
+                + "DISCARD SELECT * FROM $qfile;\n"
+                + "DISCARD SELECT * FROM $qbytes;\n"
+                + "DELETE FROM zbytes ON SELECT * FROM $qbytes;\n"
+                + "DELETE FROM zver ON SELECT * FROM $qver;"
+                + "DELETE FROM zfile ON SELECT * FROM $qfile;", baseDir);
+    }
+
+    /**
+     * Remove the folder and all its subobjects.
+     *
+     * @param folderPath The path to folder which needs to be removed.
+     */
+    public void removeFolder(String folderPath) {
+        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+    }
+
     private static AuthProvider makeStaticAuthProvider(String authData) {
         int pos = authData.indexOf(":");
         if (pos < 0)
@@ -558,7 +605,7 @@ public class YdbFs implements AutoCloseable {
                     "$fname", PrimitiveValue.newText(myPath.tail()),
                     "$vid", PrimitiveValue.newText(myVid)
             );
-            session.executeDataQuery(queryUpsertFile, tx, params);
+            session.executeDataQuery(queryUpsertFile, tx, params).join().getValue();
         }
 
         private String createVersion(List<byte[]> data) {
@@ -577,7 +624,7 @@ public class YdbFs implements AutoCloseable {
             Params params = Params.of(
                     "$vid", PrimitiveValue.newText(vid)
             );
-            session.executeDataQuery(queryCleanupVersion, tx, params);
+            session.executeDataQuery(queryCleanupVersion, tx, params).join().getValue();
         }
 
         private void upsertVersion(List<byte[]> data) {
@@ -589,7 +636,7 @@ public class YdbFs implements AutoCloseable {
                     "$author", PrimitiveValue.newText(author),
                     "$message", PrimitiveValue.newText(message)
             );
-            session.executeDataQuery(queryUpsertVersion, tx, params);
+            session.executeDataQuery(queryUpsertVersion, tx, params).join().getValue();
             int pos = 0;
             for (byte[] b : data) {
                 params = Params.of(
@@ -598,7 +645,7 @@ public class YdbFs implements AutoCloseable {
                         "$val", PrimitiveValue.newBytes(b)
                 );
                 // TODO: batch upsert
-                session.executeDataQuery(queryUpsertBytes, tx, params);
+                session.executeDataQuery(queryUpsertBytes, tx, params).join().getValue();
             }
         }
 
