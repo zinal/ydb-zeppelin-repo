@@ -9,11 +9,10 @@
  */
 
 CREATE TABLE `zeppelin/zbytes` (
-  bid String NOT NULL,
+  vid String NOT NULL,
   pos Int32 NOT NULL,
-  off Int64,
   val String,
-  PRIMARY KEY (bid,pos)
+  PRIMARY KEY (vid,pos)
 ) WITH (
   AUTO_PARTITIONING_BY_SIZE = ENABLED,
   AUTO_PARTITIONING_BY_LOAD = ENABLED,
@@ -24,11 +23,10 @@ CREATE TABLE `zeppelin/zbytes` (
 CREATE TABLE `zeppelin/zver` (
   vid String NOT NULL,
   fid String NOT NULL,
-  bid String,
+  frozen Bool,
   author Text,
   tv Timestamp,
   message Text,
-  frozen Bool,
   PRIMARY KEY (fid, vid)
 ) WITH (
   AUTO_PARTITIONING_BY_SIZE = ENABLED,

@@ -73,7 +73,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
         final Map<String, NoteInfo> retval = new HashMap<>();
         final YdbFs.FullList fl = fs.listAll();
         for (YdbFs.File file : fl.files.values()) {
-            retval.put(file.id, new NoteInfo(file.id, fl.buildPath(file)));
+            retval.put(file.id, new NoteInfo(file.id, fl.buildPath(file).toString()));
         }
         return retval;
     }
@@ -91,7 +91,8 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public void save(Note note, AuthenticationInfo subject) throws IOException {
-
+        fs.saveFile(note.getId(), note.getPath(), subject.getUser(),
+                note.toJson().getBytes(encoding));
     }
 
     @Override
