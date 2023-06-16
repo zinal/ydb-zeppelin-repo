@@ -1,3 +1,3 @@
-DECLARE $did AS Utf8;
+DECLARE $dparent AS Utf8;
 
-SELECT did FROM zdir VIEW naming WHERE dparent=$did;
+SELECT did, dname FROM zdir WHERE dparent=$dparent;

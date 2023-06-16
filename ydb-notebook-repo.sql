@@ -52,11 +52,10 @@ CREATE TABLE `zeppelin/zfile` (
 );
 
 CREATE TABLE `zeppelin/zdir` (
-  did Text NOT NULL,
-  dparent Text,
-  dname Text,
-  PRIMARY KEY(did),
-  INDEX naming GLOBAL ON (dparent, dname)
+  dparent Text NOT NULL,
+  dname Text NOT NULL,
+  did Text,
+  PRIMARY KEY(dparent, dname)
 ) WITH (
   AUTO_PARTITIONING_BY_SIZE = ENABLED,
   AUTO_PARTITIONING_BY_LOAD = ENABLED,

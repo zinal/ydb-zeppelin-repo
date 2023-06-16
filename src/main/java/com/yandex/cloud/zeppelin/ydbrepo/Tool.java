@@ -34,6 +34,8 @@ public class Tool {
     public void run(String command, String[] options) throws Exception {
         if ("import".equalsIgnoreCase(command)) {
             runImport(options);
+        } else if ("rmdir".equalsIgnoreCase(command)) {
+            runRmDir(options);
         } else {
             throw new IllegalArgumentException("Unsupported command: " + command);
         }
@@ -88,6 +90,12 @@ public class Tool {
         }
 
         fs.saveFile(fid, fullName, "sys$system", Files.readAllBytes(f.toPath()));
+    }
+
+    public void runRmDir(String[] options) throws Exception {
+        for (String option : options) {
+            fs.removeFolder(option);
+        }
     }
 
     public static void main(String[] args) {

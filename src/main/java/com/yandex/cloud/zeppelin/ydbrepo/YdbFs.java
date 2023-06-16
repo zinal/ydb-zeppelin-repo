@@ -286,10 +286,10 @@ public class YdbFs implements AutoCloseable {
         final Path pDir = new Path(pFile, 1);
         File f = retryContext.supplyResult(session -> {
             final TxControl<?> tx = TxControl.onlineRo();
-            String did = locateFolder(session, tx, pDir);
-            if (did==null)
+            Folder dir = locateFolder(session, tx, pDir);
+            if (dir==null)
                 return CompletableFuture.completedFuture(Result.success(NULL_FILE));
-            File tmp = locateFile(session, tx, did, pFile.tail());
+            File tmp = locateFile(session, tx, dir.id, pFile.tail());
             if (tmp==null)
                 tmp = NULL_FILE;
             return CompletableFuture.completedFuture(Result.success(tmp));
@@ -337,11 +337,11 @@ public class YdbFs implements AutoCloseable {
             if (file==null)
                 throw new RuntimeException("File not found: " + oldPath);
             // Create the destination folder
-            String fparent = createFolder(session, tx, pNewDir);
+            Folder parent = createFolder(session, tx, pNewDir);
             // Move the file to the new destination folder
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
-                    "$fparent", PrimitiveValue.newText(fparent),
+                    "$fparent", PrimitiveValue.newText(parent.id),
                     "$fname", PrimitiveValue.newText(pNewFile.tail()));
             session.executeDataQuery(query.moveFile, tx, params)
                     .join().getValue();
@@ -369,17 +369,20 @@ public class YdbFs implements AutoCloseable {
                     .join().getValue();
             final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
             // Locate the folder id
-            String srcId = locateFolder(session, tx, pOldFolder);
-            if (srcId==null) {
+            Folder dirSrc = locateFolder(session, tx, pOldFolder);
+            if (dirSrc==null) {
                 throw new RuntimeException("Path not found: " + oldFolderPath);
             }
             // Create the destination folder
-            String dstId = createFolder(session, tx, pNewContainer);
+            Folder dirDst = createFolder(session, tx, pNewContainer);
             // Move the folder to its destination
             Params params = Params.of(
-                    "$srcId", PrimitiveValue.newText(srcId),
-                    "$dstId", PrimitiveValue.newText(dstId),
-                    "$name", PrimitiveValue.newText(pNewFolder.tail()));
+                    "$did", PrimitiveValue.newText(dirSrc.id),
+                    "$dparent_old", PrimitiveValue.newText(dirSrc.parent),
+                    "$dparent_new", PrimitiveValue.newText(dirDst.id),
+                    "$dname_old", PrimitiveValue.newText(dirSrc.name),
+                    "$dname_new", PrimitiveValue.newText(pNewFolder.tail())
+            );
             session.executeDataQuery(query.moveFolder, tx, params)
                     .join().getValue();
             trans.commit().join().expectSuccess();
@@ -387,36 +390,36 @@ public class YdbFs implements AutoCloseable {
         }).join().getValue();
     }
 
-    private String locateFolder(Session session, TxControl<?> tx, Path path) {
+    private Folder locateFolder(Session session, TxControl<?> tx, Path path) {
         ResultSetReader rsr;
-        String dparent = "/";
+        Folder parent = Folder.ROOT;
         for (String dname : path.entries) {
             Params params = Params.of("$dname", PrimitiveValue.newText(dname),
-                    "$dparent", PrimitiveValue.newText(dparent));
+                    "$dparent", PrimitiveValue.newText(parent.id));
             rsr = session.executeDataQuery(query.findFolder, tx, params)
                     .thenApply(Result::getValue)
                     .thenApply(result -> result.getResultSet(0)).join();
             if (! rsr.next()) {
                 return null;
             }
-            dparent = rsr.getColumn(0).getText();
+            parent = new Folder(rsr.getColumn(0).getText(), parent.id, dname);
         }
-        return dparent;
+        return parent;
     }
 
-    private String createFolder(Session session, TxControl<?> tx, Path path) {
+    private Folder createFolder(Session session, TxControl<?> tx, Path path) {
         ResultSetReader rsr;
-        String dparent = "/";
+        Folder parent = Folder.ROOT;
         boolean exists = true;
         for (String dname : path.entries) {
             if (exists) {
                 Params params = Params.of("$dname", PrimitiveValue.newText(dname),
-                        "$dparent", PrimitiveValue.newText(dparent));
+                        "$dparent", PrimitiveValue.newText(parent.id));
                 rsr = session.executeDataQuery(query.findFolder, tx, params)
                         .thenApply(Result::getValue)
                         .thenApply(result -> result.getResultSet(0)).join();
                 if (rsr.next()) {
-                    dparent = rsr.getColumn(0).getText();
+                    parent = new Folder(rsr.getColumn(0).getText(), parent.id, dname);
                 } else {
                     exists = false;
                 }
@@ -426,12 +429,12 @@ public class YdbFs implements AutoCloseable {
                 Params params = Params.of(
                         "$did", PrimitiveValue.newText(did),
                         "$dname", PrimitiveValue.newText(dname),
-                        "$dparent", PrimitiveValue.newText(dparent));
+                        "$dparent", PrimitiveValue.newText(parent.id));
                 session.executeDataQuery(query.upsertFolder, tx, params).join().getValue();
-                dparent = did;
+                parent = new Folder(did, parent.id, dname);
             }
         }
-        return dparent;
+        return parent;
     }
 
     /**
@@ -467,20 +470,20 @@ public class YdbFs implements AutoCloseable {
         final Path path = new Path(folderPath);
         // Collect files and subfolders.
         final Set<String> files = new HashSet<>();
-        final List<String> folders = new ArrayList<>();
+        final List<Folder> folders = new ArrayList<>();
         retryContext.supplyResult(session -> {
-            final TxControl tx = TxControl.onlineRo();
-            String did = locateFolder(session, tx, path);
-            if (did==null) {
+            final TxControl<?> tx = TxControl.onlineRo();
+            Folder dir = locateFolder(session, tx, path);
+            if (dir==null) {
                 throw new RuntimeException("Path not found: " + folderPath);
             }
-            final Stack<String> work = new Stack<>();
-            work.push(did);
+            final Stack<Folder> work = new Stack<>();
+            work.push(dir);
             while (! work.empty()) {
-                String curDir = work.pop();
+                Folder curDir = work.pop();
                 folders.add(curDir);
-                files.addAll(listFiles(session, tx, curDir));
-                for (String subDir : listFolders(session, tx, curDir)) {
+                files.addAll(listFiles(session, tx, curDir.id));
+                for (Folder subDir : findSubFolders(session, tx, curDir.id)) {
                     work.push(subDir);
                 }
             }
@@ -492,8 +495,10 @@ public class YdbFs implements AutoCloseable {
         }
         // Batch drop folders.
         Value<?>[] folderIds = folders.stream()
-                .filter(value -> (value==null || value.length()==0 || "/".equals(value)))
-                .map(v -> (Value<?>)(StructValue.of("did", PrimitiveValue.newText(v))))
+                .filter(value -> (value==null || value.id.length()==0 || "/".equals(value.id)))
+                .map(v -> (Value<?>)(StructValue.of(
+                        "dparent", PrimitiveValue.newText(v.parent),
+                        "dname", PrimitiveValue.newText(v.name))))
                 .collect(Collectors.toCollection(ArrayList::new))
                 .toArray(new Value<?>[0]);
         Params params = Params.of("$values", ListValue.of(folderIds));
@@ -504,16 +509,17 @@ public class YdbFs implements AutoCloseable {
         }).join().getValue();
     }
 
-    private List<String> listFolders(Session session, TxControl<?> tx, String did) {
-        final List<String> retval = new ArrayList<>();
+    private List<Folder> findSubFolders(Session session, TxControl<?> tx, String dparent) {
+        final List<Folder> retval = new ArrayList<>();
         Params params = Params.of(
-                "$did", PrimitiveValue.newText(did));
+                "$dparent", PrimitiveValue.newText(dparent));
         session.executeDataQuery(query.listFolders, tx, params)
                 .thenApply(Result::getValue)
                 .thenApply(result -> {
                     ResultSetReader rsr = result.getResultSet(0);
                     while (rsr.next()) {
-                        retval.add(rsr.getColumn(0).getText());
+                        retval.add(new Folder(rsr.getColumn(0).getText(),
+                                dparent, rsr.getColumn(1).getText()));
                     }
                     return true;
                 });
@@ -612,11 +618,11 @@ public class YdbFs implements AutoCloseable {
         private void createFile(List<byte[]> data) {
             final Path myPath = new Path(this.path);
             final Path dirPath = new Path(myPath, 1);
-            String did = createFolder(session, tx, dirPath);
+            Folder dir = createFolder(session, tx, dirPath);
             String myVid = createVersion(data);
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
-                    "$fparent", PrimitiveValue.newText(did),
+                    "$fparent", PrimitiveValue.newText(dir.id),
                     "$fname", PrimitiveValue.newText(myPath.tail()),
                     "$vid", PrimitiveValue.newText(myVid)
             );
@@ -705,9 +711,9 @@ public class YdbFs implements AutoCloseable {
             this.moveFile = text("move-file", baseDir);
             this.moveFolder = text("move-folder", baseDir);
             this.deleteFile = text("delete-file", baseDir);
+            this.deleteFolders = text("delete-folders", baseDir);
             this.listFolders = text("list-folders", baseDir);
             this.listFiles = text("list-files", baseDir);
-            this.deleteFolders = text("delete-folders", baseDir);
         }
 
         private static final String DIR = packageName(YdbFs.class).replace('.', '/') + "/qtext/";
@@ -845,6 +851,8 @@ public class YdbFs implements AutoCloseable {
         public final String name;
         public final List<Folder> children = new ArrayList<>();
         public final List<File> files = new ArrayList<>();
+
+        public static final Folder ROOT = new Folder("/", "/", "/");
 
         public Folder(String id, String parent, String name) {
             this.id = id;
