@@ -5,7 +5,7 @@ $qfile=(SELECT fid FROM zfile WHERE fid=$fid);
 $qver=(SELECT fid, vid FROM zver WHERE fid=$fid);
 
 $qbytes=(
-SELECT b.bid
+SELECT b.bid AS bid
 FROM $qver v
 INNER JOIN zbytes b ON b.vid=v.vid
 );

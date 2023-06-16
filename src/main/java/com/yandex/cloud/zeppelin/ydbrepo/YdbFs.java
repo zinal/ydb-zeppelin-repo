@@ -235,20 +235,20 @@ public class YdbFs implements AutoCloseable {
             final Transaction trans = session
                     .beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
                     .join().getValue();
-            final TxControl<?> tx = TxControl.serializableRw().setCommitTx(false);
-            final VersionDao vc = new VersionDao(session, path, fid);
+            final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
+            final VersionDao vc = new VersionDao(session, tx, path, fid);
             vc.frozen = false;
             vc.author = author;
             vc.message = "-";
             // Check if file exists and whether its current version is frozen.
             File file = locateFile(session, tx, fid);
             if (file == null || file.isNull()) {
-                vc.createFile(tx, compressed);
+                vc.createFile(compressed);
             } else if (file.frozen) {
-                vc.createVersion(tx, compressed);
+                vc.createVersion(compressed);
             } else {
                 vc.vid = file.version;
-                vc.replaceVersion(tx, compressed);
+                vc.replaceVersion(compressed);
             }
             trans.commit().join().expectSuccess();
             return CompletableFuture.completedFuture(Result.success(file==null));
@@ -302,7 +302,7 @@ public class YdbFs implements AutoCloseable {
     private File locateFile(Session session, TxControl<?> tx, String fparent, String fname) {
         Params params = Params.of("$fname", PrimitiveValue.newText(fname),
                 "$fparent", PrimitiveValue.newText(fparent));
-        ResultSetReader rsr = session.executeDataQuery(query.checkFile, tx, params)
+        ResultSetReader rsr = session.executeDataQuery(query.findFile, tx, params)
                 .thenApply(Result::getValue)
                 .thenApply(result -> result.getResultSet(0)).join();
         if (! rsr.next() )
@@ -331,7 +331,7 @@ public class YdbFs implements AutoCloseable {
             final Transaction trans = session.
                     beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
                     .join().getValue();
-            final TxControl<?> tx = TxControl.serializableRw().setCommitTx(false);
+            final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
             // Obtain the file id
             File file = locateFile(session, tx, fid);
             if (file==null)
@@ -367,7 +367,7 @@ public class YdbFs implements AutoCloseable {
             final Transaction trans = session.
                     beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
                     .join().getValue();
-            final TxControl<?> tx = TxControl.serializableRw().setCommitTx(false);
+            final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
             // Locate the folder id
             String srcId = locateFolder(session, tx, pOldFolder);
             if (srcId==null) {
@@ -594,6 +594,7 @@ public class YdbFs implements AutoCloseable {
 
     private class VersionDao {
         final Session session;
+        final TxControl<?> tx;
         final String path;
         final String fid;
         String vid;
@@ -601,17 +602,18 @@ public class YdbFs implements AutoCloseable {
         String author;
         String message;
 
-        private VersionDao(Session session, String path, String fid) {
+        private VersionDao(Session session, TxControl<?> tx, String path, String fid) {
             this.session = session;
+            this.tx = tx;
             this.path = path;
             this.fid = fid;
         }
 
-        private void createFile(TxControl<?> tx, List<byte[]> data) {
+        private void createFile(List<byte[]> data) {
             final Path myPath = new Path(this.path);
             final Path dirPath = new Path(myPath, 1);
             String did = createFolder(session, tx, dirPath);
-            String myVid = createVersion(tx, data);
+            String myVid = createVersion(data);
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
                     "$fparent", PrimitiveValue.newText(did),
@@ -621,26 +623,27 @@ public class YdbFs implements AutoCloseable {
             session.executeDataQuery(query.upsertFile, tx, params).join().getValue();
         }
 
-        private String createVersion(TxControl<?> tx, List<byte[]> data) {
+        private String createVersion(List<byte[]> data) {
             vid = UUID.randomUUID().toString();
             frozen = false;
-            upsertVersion(tx, data);
+            upsertVersion(data);
             return vid;
         }
 
-        private void replaceVersion(TxControl<?> tx, List<byte[]> data) {
-            cleanupVersion(tx);
-            upsertVersion(tx, data);
+        private void replaceVersion(List<byte[]> data) {
+            cleanupVersion();
+            upsertVersion(data);
         }
 
-        private void cleanupVersion(TxControl<?> tx) {
+        private void cleanupVersion() {
             Params params = Params.of(
+                    "$fid", PrimitiveValue.newText(fid),
                     "$vid", PrimitiveValue.newText(vid)
             );
             session.executeDataQuery(query.cleanupVersion, tx, params).join().getValue();
         }
 
-        private void upsertVersion(TxControl<?> tx, List<byte[]> data) {
+        private void upsertVersion(List<byte[]> data) {
             final String bid = UUID.randomUUID().toString();
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
@@ -676,6 +679,7 @@ public class YdbFs implements AutoCloseable {
         final String readFile;
         final String checkFile;
         final String findFolder;
+        final String findFile;
         final String upsertFile;
         final String cleanupVersion;
         final String upsertVersion;
@@ -692,6 +696,7 @@ public class YdbFs implements AutoCloseable {
             this.readFile = text("read-file", baseDir);
             this.checkFile = text("check-file", baseDir);
             this.findFolder = text("find-folder", baseDir);
+            this.findFile = text("find-file", baseDir);
             this.upsertFile = text("upsert-file", baseDir);
             this.cleanupVersion = text("cleanup-version", baseDir);
             this.upsertVersion = text("upsert-version", baseDir);
