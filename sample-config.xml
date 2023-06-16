@@ -1,0 +1,9 @@
+<!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
+<properties>
+    <comment>Example properties for YDB filesystem explorer tool</comment>
+    <entry key="ydb.url">grpcs://ydb.serverless.yandexcloud.net:2135?database=/ru-central1/b1gfvslmokutuvt2g019/etnuogblap3e7dok6tf5</entry>
+    <entry key="ydb.auth.mode">SAKEY</entry>
+    <entry key="ydb.auth.data">/home/zinal/Keys/ydb-sa1-key1.json</entry>
+    <entry key="ydb.dir">zeppelin</entry>
+    <entry key="ydb.fname.mangle">true</entry>
+</properties>

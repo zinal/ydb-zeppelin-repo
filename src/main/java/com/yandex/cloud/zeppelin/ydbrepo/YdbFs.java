@@ -254,6 +254,14 @@ public class YdbFs implements AutoCloseable {
         }).join().getValue();
     }
 
+    public File locateFile(String fid) {
+        return retryContext.supplyResult(session -> {
+            final TxControl<?> tx = TxControl.onlineRo();
+            return CompletableFuture.completedFuture(Result.success(
+                    locateFile(session, tx, fid) ));
+        }).join().getValue();
+    }
+
     private File locateFile(Session session, TxControl<?> tx, String fid) {
         Params params = Params.of("$fid", PrimitiveValue.newText(fid));
         ResultSetReader rsr = session.executeDataQuery(query.checkFile, tx, params)
@@ -266,6 +274,35 @@ public class YdbFs implements AutoCloseable {
                 rsr.getColumn(1).getText(),
                 rsr.getColumn(2).getText());
         file.frozen = rsr.getColumn(3).getBool();
+        return file;
+    }
+
+    public File locateFileByPath(String path) {
+        final Path pFile = new Path(path);
+        final Path pDir = new Path(pFile, 1);
+        return retryContext.supplyResult(session -> {
+            final TxControl<?> tx = TxControl.onlineRo();
+            String did = locateFolder(session, tx, pDir);
+            if (did==null)
+                return CompletableFuture.completedFuture(Result.success((File) null));
+            return CompletableFuture.completedFuture(Result.success(
+                    locateFile(session, tx, did, pFile.tail()) ));
+        }).join().getValue();
+    }
+
+    private File locateFile(Session session, TxControl<?> tx, String fparent, String fname) {
+        Params params = Params.of("$fname", PrimitiveValue.newText(fname),
+                "$fparent", PrimitiveValue.newText(fparent));
+        ResultSetReader rsr = session.executeDataQuery(query.checkFile, tx, params)
+                .thenApply(Result::getValue)
+                .thenApply(result -> result.getResultSet(0)).join();
+        if (! rsr.next() )
+            return null;
+        File file = new File(rsr.getColumn(0).getText(),
+                fparent,
+                fname,
+                rsr.getColumn(1).getText());
+        file.frozen = rsr.getColumn(2).getBool();
         return file;
     }
 
@@ -473,12 +510,6 @@ public class YdbFs implements AutoCloseable {
         return retval;
     }
 
-    private static String buildListFolders(String baseDir) {
-        return String.format("PRAGMA TablePathPrefix('%s');\n"
-                + "DECLARE $did AS Utf8;\n"
-                + "SELECT did FROM zdir VIEW naming WHERE dparent=$did;", baseDir);
-    }
-
     private List<String> listFiles(Session session, TxControl<?> tx, String did) {
         final List<String> retval = new ArrayList<>();
         Params params = Params.of(
@@ -662,7 +693,7 @@ public class YdbFs implements AutoCloseable {
             this.deleteFolders = text("delete-folders", baseDir);
         }
 
-        private static final String DIR = packageName(YdbFs.class).replace('.', '/') + "/";
+        private static final String DIR = packageName(YdbFs.class).replace('.', '/') + "/qtext/";
 
         public static String text(String id, String baseDir) {
             final StringBuilder sb = new StringBuilder();
@@ -724,8 +755,9 @@ public class YdbFs implements AutoCloseable {
         }
 
         public Path(String path, int skip) {
-            List<String> tmp = Arrays.asList(path.split("/"));
-            tmp.removeIf(v -> (v==null || v.length()==0));
+            List<String> tmp = Arrays.asList(path.split("/")).stream()
+                    .filter(v -> !(v==null || v.length()==0))
+                    .collect(Collectors.toList());
             while (skip > 0 && !tmp.isEmpty()) {
                 tmp.remove(tmp.size()-1);
                 --skip;
