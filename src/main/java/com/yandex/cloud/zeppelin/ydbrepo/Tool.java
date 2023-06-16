@@ -137,7 +137,7 @@ public class Tool implements AutoCloseable {
             }
             File file = new File(dir, p.tail());
             System.out.println("** EXPORT " + file.getAbsolutePath());
-            Files.write(file.toPath(), fs.readFile(f.id),
+            Files.write(file.toPath(), fs.readFile(f.id, null),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         }
     }

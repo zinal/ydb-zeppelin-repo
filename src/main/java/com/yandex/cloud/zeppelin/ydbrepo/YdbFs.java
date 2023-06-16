@@ -170,14 +170,20 @@ public class YdbFs implements AutoCloseable {
      * Read the current file's data.
      *
      * @param fid File id
-     * @return File data, or null if the file does not exist.
+     * @param vid File revision id, or null for the current revision
+     * @return File data, or null if the file or revision does not exist.
      */
-    public byte[] readFile(String fid) {
+    public byte[] readFile(String fid, String vid) {
         final List<byte[]> data = new ArrayList<>();
 
         boolean hasFile = retryContext.supplyResult(session -> {
             final TxControl<?> tx = TxControl.onlineRo();
-            String bid = lookupBlobCur(session, tx, fid);
+            String bid;
+            if (vid==null || vid.length()==0) {
+                bid = lookupBlobCur(session, tx, fid);
+            } else {
+                bid = lookupBlobRev(session, tx, fid, vid);
+            }
             if (bid==null)
                 return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
             readFile(session, tx, bid, data);
@@ -198,6 +204,21 @@ public class YdbFs implements AutoCloseable {
     private String lookupBlobCur(Session session, TxControl<?> tx, String fid) {
         String bid = session.executeDataQuery(
                 query.lookubBlobCur, tx, Params.of("$fid", PrimitiveValue.newText(fid)))
+            .thenApply(Result::getValue)
+            .thenApply(result -> {
+                ResultSetReader rsr = result.getResultSet(0);
+                if (!rsr.next())
+                    return "";
+                return rsr.getColumn(0).getText();
+            }).join();
+        return (bid==null || bid.length()==0) ? null : bid;
+    }
+
+    private String lookupBlobRev(Session session, TxControl<?> tx, String fid, String vid) {
+        String bid = session.executeDataQuery(
+                query.lookubBlobRev, tx, Params.of(
+                        "$fid", PrimitiveValue.newText(fid),
+                        "$vid", PrimitiveValue.newText(vid)))
             .thenApply(Result::getValue)
             .thenApply(result -> {
                 ResultSetReader rsr = result.getResultSet(0);

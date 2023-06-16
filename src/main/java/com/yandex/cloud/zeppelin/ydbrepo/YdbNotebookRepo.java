@@ -81,13 +81,10 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public Note get(String noteId, String notePath, AuthenticationInfo subject) throws IOException {
-        byte[] data = fs.readFile(noteId);
+        byte[] data = fs.readFile(noteId, null);
         if (data==null)
             throw new FileNotFoundException(buildNoteFileName(noteId, notePath));
-        String json = IOUtils.toString(new ByteArrayInputStream(data), encoding);
-        Note note = Note.fromJson(noteId, json);
-        note.setPath(notePath);
-        return note;
+        return fromBytes(data, noteId, notePath);
     }
 
     @Override
@@ -138,7 +135,10 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public Note get(String noteId, String notePath, String revId, AuthenticationInfo subject) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        byte[] data = fs.readFile(noteId, revId);
+        if (data==null)
+            throw new FileNotFoundException(buildNoteFileName(noteId, notePath));
+        return fromBytes(data, noteId, notePath);
     }
 
     @Override
@@ -148,7 +148,18 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public Note setNoteRevision(String noteId, String notePath, String revId, AuthenticationInfo subject) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        byte[] data = fs.readFile(noteId, revId);
+        if (data==null)
+            throw new FileNotFoundException(buildNoteFileName(noteId, notePath));
+        fs.saveFile(noteId, notePath, subject.getUser(), data);
+        return fromBytes(data, noteId, notePath);
+    }
+
+    private Note fromBytes(byte[] data, String noteId, String notePath) throws IOException {
+        String json = IOUtils.toString(new ByteArrayInputStream(data), encoding);
+        Note note = Note.fromJson(noteId, json);
+        note.setPath(notePath);
+        return note;
     }
 
 }
