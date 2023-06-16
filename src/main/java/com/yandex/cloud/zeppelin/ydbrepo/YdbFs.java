@@ -495,18 +495,20 @@ public class YdbFs implements AutoCloseable {
         }
         // Batch drop folders.
         Value<?>[] folderIds = folders.stream()
-                .filter(value -> (value==null || value.id.length()==0 || "/".equals(value.id)))
+                .filter(value -> !(value==null || value.id.length()==0 || "/".equals(value.id)))
                 .map(v -> (Value<?>)(StructValue.of(
                         "dparent", PrimitiveValue.newText(v.parent),
                         "dname", PrimitiveValue.newText(v.name))))
                 .collect(Collectors.toCollection(ArrayList::new))
                 .toArray(new Value<?>[0]);
-        Params params = Params.of("$values", ListValue.of(folderIds));
-        retryContext.supplyResult(session -> {
-            session.executeDataQuery(query.deleteFolders,
-                    TxControl.serializableRw().setCommitTx(true), params).join().getValue();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
-        }).join().getValue();
+        if (folderIds.length > 0) {
+            Params params = Params.of("$values", ListValue.of(folderIds));
+            retryContext.supplyResult(session -> {
+                session.executeDataQuery(query.deleteFolders,
+                        TxControl.serializableRw().setCommitTx(true), params).join().getValue();
+                return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            }).join().getValue();
+        }
     }
 
     private List<Folder> findSubFolders(Session session, TxControl<?> tx, String dparent) {
@@ -518,11 +520,14 @@ public class YdbFs implements AutoCloseable {
                 .thenApply(result -> {
                     ResultSetReader rsr = result.getResultSet(0);
                     while (rsr.next()) {
-                        retval.add(new Folder(rsr.getColumn(0).getText(),
-                                dparent, rsr.getColumn(1).getText()));
+                        String folderId = rsr.getColumn(0).getText();
+                        if (! "/".equals(folderId)) {
+                            retval.add(new Folder(folderId,
+                                    dparent, rsr.getColumn(1).getText()));
+                        }
                     }
                     return true;
-                });
+                }).join();
         return retval;
     }
 
@@ -538,7 +543,7 @@ public class YdbFs implements AutoCloseable {
                         retval.add(rsr.getColumn(0).getText());
                     }
                     return true;
-                });
+                }).join();
         return retval;
     }
 
