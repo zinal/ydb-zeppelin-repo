@@ -675,6 +675,7 @@ public class YdbFs implements AutoCloseable {
                 );
                 // TODO: batch upsert
                 session.executeDataQuery(query.upsertBytes, tx, params).join().getValue();
+                ++pos;
             }
         }
     }
