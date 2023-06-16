@@ -49,7 +49,7 @@ import tech.ydb.table.values.StructValue;
  */
 public class YdbFs implements AutoCloseable {
 
-    private final String baseDir;
+    private final String basePath;
     private final String database;
     private final GrpcTransport transport;
     private final TableClient tableClient;
@@ -83,8 +83,9 @@ public class YdbFs implements AutoCloseable {
         database = transport.getDatabase();
         tableClient = TableClient.newClient(transport).sessionPoolSize(0, 16).build();
         retryContext = SessionRetryContext.create(tableClient).build();
-        this.baseDir = baseDir;
-        this.query = new Queries(baseDir);
+        this.basePath = (baseDir==null || baseDir.length()==0) ?
+                database : (database + "/" + baseDir);
+        this.query = new Queries(this.basePath);
     }
 
     @Override
@@ -111,7 +112,7 @@ public class YdbFs implements AutoCloseable {
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
             .orderedRead(false).columns("did", "dparent", "dname").build();
         try (Session session = tableClient.createSession(Duration.ofSeconds(30)).join().getValue()) {
-            session.readTable(database + "/" + baseDir + "zdir", settings, rs -> {
+            session.readTable(basePath + "/zdir", settings, rs -> {
                 final int did = rs.getColumnIndex("did");
                 final int dparent = rs.getColumnIndex("dparent");
                 final int dname = rs.getColumnIndex("dname");
@@ -137,7 +138,7 @@ public class YdbFs implements AutoCloseable {
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
             .orderedRead(false).columns("fid", "fparent", "fname").build();
         try (Session session = tableClient.createSession(Duration.ofSeconds(30)).join().getValue()) {
-            session.readTable(database + "/" + baseDir + "zfile", settings, rs -> {
+            session.readTable(basePath + "/zfile", settings, rs -> {
                 final int fid = rs.getColumnIndex("fid");
                 final int fparent = rs.getColumnIndex("fparent");
                 final int fname = rs.getColumnIndex("fname");
@@ -241,7 +242,7 @@ public class YdbFs implements AutoCloseable {
             vc.message = "-";
             // Check if file exists and whether its current version is frozen.
             File file = locateFile(session, tx, fid);
-            if (file == null) {
+            if (file == null || file.isNull()) {
                 vc.createFile(tx, compressed);
             } else if (file.frozen) {
                 vc.createVersion(tx, compressed);
@@ -255,11 +256,14 @@ public class YdbFs implements AutoCloseable {
     }
 
     public File locateFile(String fid) {
-        return retryContext.supplyResult(session -> {
+        File f = retryContext.supplyResult(session -> {
             final TxControl<?> tx = TxControl.onlineRo();
             return CompletableFuture.completedFuture(Result.success(
                     locateFile(session, tx, fid) ));
         }).join().getValue();
+        if (f.isNull())
+            return null;
+        return f;
     }
 
     private File locateFile(Session session, TxControl<?> tx, String fid) {
@@ -268,7 +272,7 @@ public class YdbFs implements AutoCloseable {
                 .thenApply(Result::getValue)
                 .thenApply(result -> result.getResultSet(0)).join();
         if (! rsr.next() )
-            return null;
+            return NULL_FILE;
         File file = new File(fid,
                 rsr.getColumn(0).getText(),
                 rsr.getColumn(1).getText(),
@@ -280,14 +284,19 @@ public class YdbFs implements AutoCloseable {
     public File locateFileByPath(String path) {
         final Path pFile = new Path(path);
         final Path pDir = new Path(pFile, 1);
-        return retryContext.supplyResult(session -> {
+        File f = retryContext.supplyResult(session -> {
             final TxControl<?> tx = TxControl.onlineRo();
             String did = locateFolder(session, tx, pDir);
             if (did==null)
-                return CompletableFuture.completedFuture(Result.success((File) null));
-            return CompletableFuture.completedFuture(Result.success(
-                    locateFile(session, tx, did, pFile.tail()) ));
+                return CompletableFuture.completedFuture(Result.success(NULL_FILE));
+            File tmp = locateFile(session, tx, did, pFile.tail());
+            if (tmp==null)
+                tmp = NULL_FILE;
+            return CompletableFuture.completedFuture(Result.success(tmp));
         }).join().getValue();
+        if (f.isNull())
+            return null;
+        return f;
     }
 
     private File locateFile(Session session, TxControl<?> tx, String fparent, String fname) {
@@ -419,6 +428,7 @@ public class YdbFs implements AutoCloseable {
                         "$dname", PrimitiveValue.newText(dname),
                         "$dparent", PrimitiveValue.newText(dparent));
                 session.executeDataQuery(query.upsertFolder, tx, params).join().getValue();
+                dparent = did;
             }
         }
         return dparent;
@@ -540,7 +550,7 @@ public class YdbFs implements AutoCloseable {
         while (offset < data.length) {
             final int remainder = data.length - offset;
             int portion = maxportion;
-            if (portion < remainder)
+            if (portion > remainder)
                 portion = remainder;
             final ByteArrayOutputStream baos = new ByteArrayOutputStream();
             compress(data, offset, portion, baos);
@@ -631,9 +641,11 @@ public class YdbFs implements AutoCloseable {
         }
 
         private void upsertVersion(TxControl<?> tx, List<byte[]> data) {
+            final String bid = UUID.randomUUID().toString();
             Params params = Params.of(
-                    "$vid", PrimitiveValue.newText(vid),
                     "$fid", PrimitiveValue.newText(fid),
+                    "$vid", PrimitiveValue.newText(vid),
+                    "$bid", PrimitiveValue.newText(bid),
                     "$frozen", PrimitiveValue.newBool(frozen),
                     "$tv", PrimitiveValue.newTimestamp(Instant.now()),
                     "$author", PrimitiveValue.newText(author),
@@ -643,7 +655,7 @@ public class YdbFs implements AutoCloseable {
             int pos = 0;
             for (byte[] b : data) {
                 params = Params.of(
-                        "$vid", PrimitiveValue.newText(vid),
+                        "$bid", PrimitiveValue.newText(bid),
                         "$pos", PrimitiveValue.newInt32(pos),
                         "$val", PrimitiveValue.newBytes(b)
                 );
@@ -697,7 +709,8 @@ public class YdbFs implements AutoCloseable {
 
         public static String text(String id, String baseDir) {
             final StringBuilder sb = new StringBuilder();
-            sb.append("PRAGMA TablePathPrefix('").append(baseDir).append("');\n");
+            sb.append("--!syntax_v1\n");
+            sb.append("PRAGMA TablePathPrefix(\"").append(baseDir).append("\");\n");
             ClassLoader loader = Thread.currentThread().getContextClassLoader();
             try (InputStream stream = loader.getResourceAsStream(DIR + id + ".sql")) {
                 BufferedReader reader = new BufferedReader(
@@ -798,6 +811,8 @@ public class YdbFs implements AutoCloseable {
             return sb.toString();
         }
     }
+
+    private static final File NULL_FILE = new File(null, null, null, null);
     
     public static class File implements Serializable {
         public final String id;
@@ -812,6 +827,10 @@ public class YdbFs implements AutoCloseable {
             this.name = name;
             this.version = version;
             this.frozen = false;
+        }
+
+        public boolean isNull() {
+            return (id==null);
         }
     }
 
