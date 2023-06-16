@@ -4,15 +4,16 @@
  *
  *   ydb scheme mkdir zeppelin
  *   ydb yql -f ydb-notebook-repo.sql
+ *   ydb scheme ls zeppelin
  *
  *   ydb scheme rmdir -r -f zeppelin
  */
 
 CREATE TABLE `zeppelin/zbytes` (
-  vid String NOT NULL,
+  bid Text NOT NULL,
   pos Int32 NOT NULL,
   val String,
-  PRIMARY KEY (vid,pos)
+  PRIMARY KEY (bid,pos)
 ) WITH (
   AUTO_PARTITIONING_BY_SIZE = ENABLED,
   AUTO_PARTITIONING_BY_LOAD = ENABLED,
@@ -21,8 +22,9 @@ CREATE TABLE `zeppelin/zbytes` (
 );
 
 CREATE TABLE `zeppelin/zver` (
-  vid String NOT NULL,
-  fid String NOT NULL,
+  fid Text NOT NULL,
+  vid Text NOT NULL,
+  bid Text,
   frozen Bool,
   author Text,
   tv Timestamp,
