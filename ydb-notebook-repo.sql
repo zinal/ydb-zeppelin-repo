@@ -65,5 +65,5 @@ CREATE TABLE `zeppelin/zdir` (
 
 COMMIT;
 
-UPSERT INTO `zeppelin/zdir`(did,dparent) VALUES('/','/');
+UPSERT INTO `zeppelin/zdir`(did,dname,dparent) VALUES("/","/","/");
 COMMIT;

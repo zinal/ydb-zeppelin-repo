@@ -10,7 +10,7 @@ import java.util.UUID;
  *
  * @author zinal
  */
-public class Tool {
+public class Tool implements AutoCloseable {
 
     public static final String PROP_URL = "ydb.url";
     public static final String PROP_AUTH_MODE = "ydb.auth.mode";
@@ -89,6 +89,7 @@ public class Tool {
             fid = desc.id;
         }
 
+        System.out.println("** IMPORT " + fullName);
         fs.saveFile(fid, fullName, "sys$system", Files.readAllBytes(f.toPath()));
     }
 
@@ -110,11 +111,18 @@ public class Tool {
             try (FileInputStream fis = new FileInputStream(args[0])) {
                 config.loadFromXML(fis);
             }
-            new Tool(config).run(args[1], options);
+            try (Tool tool = new Tool(config)) {
+                tool.run(args[1], options);
+            }
         } catch(Exception ex) {
             ex.printStackTrace(System.err);
             System.exit(1);
         }
+    }
+
+    @Override
+    public void close() {
+        fs.close();
     }
 
 }
