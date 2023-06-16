@@ -110,8 +110,9 @@ public class YdbFs implements AutoCloseable {
     public Map<String, Folder> listFolders() {
         final Map<String, Folder> m = new HashMap<>();
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
-            .orderedRead(false).columns("did", "dparent", "dname").build();
-        try (Session session = tableClient.createSession(Duration.ofSeconds(30)).join().getValue()) {
+            .orderedRead(false).timeout(Duration.ofMinutes(1))
+            .columns("did", "dparent", "dname").build();
+        try (Session session = tableClient.createSession(Duration.ofSeconds(10)).join().getValue()) {
             session.readTable(basePath + "/zdir", settings, rs -> {
                 final int did = rs.getColumnIndex("did");
                 final int dparent = rs.getColumnIndex("dparent");
@@ -123,7 +124,7 @@ public class YdbFs implements AutoCloseable {
                             rs.getColumn(dname).getText());
                     m.put(f.id, f);
                 }
-            });
+            }).join().expectSuccess();
         }
         return m;
     }
@@ -136,8 +137,9 @@ public class YdbFs implements AutoCloseable {
     public Map<String, File> listFiles() {
         final Map<String, File> m = new HashMap<>();
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
-            .orderedRead(false).columns("fid", "fparent", "fname").build();
-        try (Session session = tableClient.createSession(Duration.ofSeconds(30)).join().getValue()) {
+            .orderedRead(false).timeout(Duration.ofMinutes(1))
+            .columns("fid", "fparent", "fname", "vid").build();
+        try (Session session = tableClient.createSession(Duration.ofSeconds(10)).join().getValue()) {
             session.readTable(basePath + "/zfile", settings, rs -> {
                 final int fid = rs.getColumnIndex("fid");
                 final int fparent = rs.getColumnIndex("fparent");
@@ -151,7 +153,7 @@ public class YdbFs implements AutoCloseable {
                             rs.getColumn(vid).getText());
                     m.put(f.id, f);
                 }
-            });
+            }).join().expectSuccess();
         }
         return m;
     }
@@ -204,8 +206,8 @@ public class YdbFs implements AutoCloseable {
         }).join().getValue();
 
         if (totalRows == 0)
-            return null;
-        
+            return new byte[0];
+
         // Decompression has been deliberately moved out of transaction
         final ByteArrayOutputStream baos = new ByteArrayOutputStream();
         for (byte[] compr : data) {
@@ -812,6 +814,11 @@ public class YdbFs implements AutoCloseable {
             if (entries.length==0)
                 return "/";
             return entries[entries.length - 1];
+        }
+
+        public boolean isEmpty() {
+            return (entries.length == 0) ||
+                    (entries.length == 1 && "/".equals(entries[0]));
         }
 
         @Override

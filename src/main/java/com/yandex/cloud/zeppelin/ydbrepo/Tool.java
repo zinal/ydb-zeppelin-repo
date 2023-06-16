@@ -2,7 +2,9 @@ package com.yandex.cloud.zeppelin.ydbrepo;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -34,6 +36,8 @@ public class Tool implements AutoCloseable {
     public void run(String command, String[] options) throws Exception {
         if ("import".equalsIgnoreCase(command)) {
             runImport(options);
+        } else if ("export".equalsIgnoreCase(command)) {
+            runExport(options);
         } else if ("rmdir".equalsIgnoreCase(command)) {
             runRmDir(options);
         } else {
@@ -43,7 +47,24 @@ public class Tool implements AutoCloseable {
 
     public void runImport(String[] options) throws Exception {
         for (String option : options) {
-            importObject("", option);
+            runImport(option);
+        }
+    }
+
+    public void runImport(String object) throws Exception {
+        File f = new File(object);
+        if (!f.exists() || !f.canRead()) {
+            throw new IOException("File not found: " + object);
+        }
+        if (f.isFile()) {
+            importFile("", f);
+        } else if (f.isDirectory()) {
+            for (File fx : f.listFiles(
+                    (File dir1, String name) -> !(name.startsWith(".")))) {
+                importObject("", fx);
+            }
+        } else {
+            throw new IOException("Illegal file type: " + object);
         }
     }
 
@@ -96,6 +117,28 @@ public class Tool implements AutoCloseable {
     public void runRmDir(String[] options) throws Exception {
         for (String option : options) {
             fs.removeFolder(option);
+        }
+    }
+
+    public void runExport(String[] options) throws Exception {
+        File targetDir = (options.length == 0) ? new File(".") : new File(options[0]);
+        YdbFs.FullList fullList = fs.listAll();
+        for (YdbFs.File f : fullList.files.values()) {
+            YdbFs.Path p = fullList.buildPath(f);
+            if (p.isEmpty())
+                continue;
+            File dir = targetDir;
+            if (p.entries.length > 1) {
+                YdbFs.Path d = new YdbFs.Path(p, 1);
+                for (String x : d.entries) {
+                    dir = new File(dir, x);
+                }
+                dir.mkdirs();
+            }
+            File file = new File(dir, p.tail());
+            System.out.println("** EXPORT " + file.getAbsolutePath());
+            Files.write(file.toPath(), fs.readFile(f.id),
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         }
     }
 
