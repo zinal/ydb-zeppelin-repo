@@ -5,6 +5,7 @@ import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -130,7 +131,9 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     @Override
     public Revision checkpoint(String noteId, String notePath, String checkpointMsg,
             AuthenticationInfo subject) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        Instant stamp = Instant.now();
+        String vid = fs.checkpoint(noteId, notePath, checkpointMsg, subject.getUser(), stamp);
+        return new Revision(vid, vid, (int) stamp.getEpochSecond());
     }
 
     @Override

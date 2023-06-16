@@ -169,43 +169,23 @@ public class YdbFs implements AutoCloseable {
     /**
      * Read the current file's data.
      *
-     * @param id File id
+     * @param fid File id
      * @return File data, or null if the file does not exist.
      */
-    public byte[] readFile(String id) {
+    public byte[] readFile(String fid) {
         final List<byte[]> data = new ArrayList<>();
-        final PrimitiveValue vid = PrimitiveValue.newText(id);
-        final int limit = 10;
-        final PrimitiveValue vlimit = PrimitiveValue.newInt32(limit);
 
-        int totalRows = retryContext.supplyResult(session -> {
+        boolean hasFile = retryContext.supplyResult(session -> {
             final TxControl<?> tx = TxControl.onlineRo();
-            final int[] pos = new int[] { -1 };
-            int count, totalCount = 0;
-            do {
-                Params params = Params.of("$fid", vid, "$limit", vlimit,
-                        "$pos", PrimitiveValue.newInt32(pos[0]));
-                count = session.executeDataQuery(query.readFile, tx, params)
-                        .thenApply(Result::getValue)
-                        .thenApply(result -> {
-                            int localCount = 0;
-                            ResultSetReader rsr = result.getResultSet(0);
-                            while (rsr.next()) {
-                                data.add(rsr.getColumn(0).getBytes());
-                                int curPos = rsr.getColumn(1).getInt32();
-                                if (curPos > pos[0])
-                                    pos[0] = curPos;
-                                ++localCount;
-                            }
-                            return localCount;
-                        }).join();
-                totalCount += count;
-            } while (count >= limit);
-            return CompletableFuture.completedFuture(Result.success(totalCount));
+            String bid = lookupBlobCur(session, tx, fid);
+            if (bid==null)
+                return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
+            readFile(session, tx, bid, data);
+            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
         }).join().getValue();
 
-        if (totalRows == 0)
-            return new byte[0];
+        if (! hasFile)
+            return null;
 
         // Decompression has been deliberately moved out of transaction
         final ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -213,6 +193,46 @@ public class YdbFs implements AutoCloseable {
             decompress(compr, baos);
         }
         return baos.toByteArray();
+    }
+
+    private String lookupBlobCur(Session session, TxControl<?> tx, String fid) {
+        String bid = session.executeDataQuery(
+                query.lookubBlobCur, tx, Params.of("$fid", PrimitiveValue.newText(fid)))
+            .thenApply(Result::getValue)
+            .thenApply(result -> {
+                ResultSetReader rsr = result.getResultSet(0);
+                if (!rsr.next())
+                    return "";
+                return rsr.getColumn(0).getText();
+            }).join();
+        return (bid==null || bid.length()==0) ? null : bid;
+    }
+
+    private void readFile(Session session, TxControl<?> tx, String bid, List<byte[]> data) {
+        final int limit = 10;
+        final PrimitiveValue vlimit = PrimitiveValue.newInt32(limit);
+        final PrimitiveValue vbid = PrimitiveValue.newText(bid);
+
+        final int[] pos = new int[] { -1 };
+        int count;
+        do {
+            Params params = Params.of("$bid", vbid, "$limit", vlimit,
+                    "$pos", PrimitiveValue.newInt32(pos[0]));
+            count = session.executeDataQuery(query.readFile, tx, params)
+                    .thenApply(Result::getValue)
+                    .thenApply(result -> {
+                        int localCount = 0;
+                        ResultSetReader rsr = result.getResultSet(0);
+                        while (rsr.next()) {
+                            data.add(rsr.getColumn(0).getBytes());
+                            int curPos = rsr.getColumn(1).getInt32();
+                            if (curPos > pos[0])
+                                pos[0] = curPos;
+                            ++localCount;
+                        }
+                        return localCount;
+                    }).join();
+        } while (count >= limit);
     }
 
     /**
@@ -426,7 +446,7 @@ public class YdbFs implements AutoCloseable {
                 }
             }
             if (!exists) {
-                String did = UUID.randomUUID().toString();
+                String did = newId();
                 Params params = Params.of(
                         "$did", PrimitiveValue.newText(did),
                         "$dname", PrimitiveValue.newText(dname),
@@ -447,7 +467,10 @@ public class YdbFs implements AutoCloseable {
      */
     public boolean removeFile(String fid, String path) {
         return retryContext.supplyResult(session -> {
-            File file = locateFile(session, TxControl.serializableRw().setCommitTx(false), fid);
+            Transaction trans = session.beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
+                    .join().getValue();
+            TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
+            File file = locateFile(session, tx, fid);
             if (file==null) {
                 if (path!=null) {
                     throw new RuntimeException("Path not found: " + path);
@@ -456,8 +479,8 @@ public class YdbFs implements AutoCloseable {
             }
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid));
-            session.executeDataQuery(query.deleteFile, 
-                    TxControl.serializableRw().setCommitTx(true), params).join().getValue();
+            session.executeDataQuery(query.deleteFile, tx.setCommitTx(true), params)
+                    .join().getValue();
             return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
         }).join().getValue();
     }
@@ -548,6 +571,45 @@ public class YdbFs implements AutoCloseable {
         return retval;
     }
 
+    public String checkpoint(String fid, String path, 
+            String message, String author, Instant stamp) {
+        return retryContext.supplyResult(session -> {
+            Transaction trans = session.beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
+                    .join().getValue();
+            TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
+            File file = locateFile(session, tx, fid);
+            if (file==null) {
+                if (path!=null) {
+                    throw new RuntimeException("Path not found: " + path);
+                }
+                return CompletableFuture.completedFuture(Result.success(""));
+            }
+            final String versionId;
+            if (file.frozen) {
+                String bid = lookupBlobCur(session, tx, file.id);
+                final VersionDao dao = new VersionDao(session, tx, "" /*unused*/, file.id);
+                dao.frozen = true;
+                dao.vid = null;
+                dao.message = message;
+                dao.author = author;
+                versionId = dao.createVersion(bid, stamp);
+            } else {
+                Params params = Params.of(
+                        "$fid", PrimitiveValue.newText(file.id),
+                        "$vid", PrimitiveValue.newText(file.version),
+                        "$frozen", PrimitiveValue.newBool(true),
+                        "$tv", PrimitiveValue.newTimestamp(stamp),
+                        "$author", PrimitiveValue.newText(author),
+                        "$message", PrimitiveValue.newText(message)
+                );
+                session.executeDataQuery(query.freezeVersion, tx, params).join().getValue();
+                versionId = file.version;
+            }
+            trans.commit().join().expectSuccess();
+            return CompletableFuture.completedFuture(Result.success(versionId));
+        }).join().getValue();
+    }
+
     private static StaticCredentials makeStaticCredentials(String authData) {
         int pos = authData.indexOf(":");
         if (pos < 0)
@@ -604,6 +666,10 @@ public class YdbFs implements AutoCloseable {
         }
     }
 
+    public static String newId() {
+        return UUID.randomUUID().toString();
+    }
+
     private class VersionDao {
         final Session session;
         final TxControl<?> tx;
@@ -636,9 +702,16 @@ public class YdbFs implements AutoCloseable {
         }
 
         private String createVersion(List<byte[]> data) {
-            vid = UUID.randomUUID().toString();
+            vid = newId();
             frozen = false;
             upsertVersion(data);
+            return vid;
+        }
+
+        private String createVersion(String bid, Instant stamp) {
+            vid = newId();
+            frozen = true;
+            upsertVersion(bid, stamp);
             return vid;
         }
 
@@ -655,21 +728,25 @@ public class YdbFs implements AutoCloseable {
             session.executeDataQuery(query.cleanupVersion, tx, params).join().getValue();
         }
 
-        private void upsertVersion(List<byte[]> data) {
-            final String bid = UUID.randomUUID().toString();
+        private void upsertVersion(String bid, Instant stamp) {
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
                     "$vid", PrimitiveValue.newText(vid),
                     "$bid", PrimitiveValue.newText(bid),
                     "$frozen", PrimitiveValue.newBool(frozen),
-                    "$tv", PrimitiveValue.newTimestamp(Instant.now()),
+                    "$tv", PrimitiveValue.newTimestamp(stamp),
                     "$author", PrimitiveValue.newText(author),
                     "$message", PrimitiveValue.newText(message)
             );
             session.executeDataQuery(query.upsertVersion, tx, params).join().getValue();
+        }
+
+        private void upsertVersion(List<byte[]> data) {
+            final String bid = newId();
+            upsertVersion(bid, Instant.now());
             int pos = 0;
             for (byte[] b : data) {
-                params = Params.of(
+                Params params = Params.of(
                         "$bid", PrimitiveValue.newText(bid),
                         "$pos", PrimitiveValue.newInt32(pos),
                         "$val", PrimitiveValue.newBytes(b)
@@ -685,86 +762,6 @@ public class YdbFs implements AutoCloseable {
         String fullName = clazz.getName();
         String shortName = clazz.getSimpleName();
         return fullName.substring(0, fullName.length() - (shortName.length() + 1));
-    }
-
-    private static class Queries {
-
-        final String readFile;
-        final String checkFile;
-        final String findFolder;
-        final String findFile;
-        final String upsertFile;
-        final String cleanupVersion;
-        final String upsertVersion;
-        final String upsertBytes;
-        final String upsertFolder;
-        final String moveFile;
-        final String moveFolder;
-        final String deleteFile;
-        final String listFolders;
-        final String listFiles;
-        final String deleteFolders;
-
-        Queries(String baseDir) {
-            this.readFile = text("read-file", baseDir);
-            this.checkFile = text("check-file", baseDir);
-            this.findFolder = text("find-folder", baseDir);
-            this.findFile = text("find-file", baseDir);
-            this.upsertFile = text("upsert-file", baseDir);
-            this.cleanupVersion = text("cleanup-version", baseDir);
-            this.upsertVersion = text("upsert-version", baseDir);
-            this.upsertBytes = text("upsert-bytes", baseDir);
-            this.upsertFolder = text("upsert-folder", baseDir);
-            this.moveFile = text("move-file", baseDir);
-            this.moveFolder = text("move-folder", baseDir);
-            this.deleteFile = text("delete-file", baseDir);
-            this.deleteFolders = text("delete-folders", baseDir);
-            this.listFolders = text("list-folders", baseDir);
-            this.listFiles = text("list-files", baseDir);
-        }
-
-        private static final String DIR = packageName(YdbFs.class).replace('.', '/') + "/qtext/";
-
-        public static String text(String id, String baseDir) {
-            final StringBuilder sb = new StringBuilder();
-            sb.append("--!syntax_v1\n");
-            sb.append("PRAGMA TablePathPrefix(\"").append(baseDir).append("\");\n");
-            ClassLoader loader = Thread.currentThread().getContextClassLoader();
-            try (InputStream stream = loader.getResourceAsStream(DIR + id + ".sql")) {
-                BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(stream, StandardCharsets.UTF_8));
-                char[] buffer = new char[100];
-                int nchars;
-                while ((nchars=reader.read(buffer)) != -1) {
-                    sb.append(buffer, 0, nchars);
-                }
-            } catch(IOException ix) {
-                throw new IllegalStateException("Failed to load query text " + id, ix);
-            }
-            return sb.toString();
-        }
-    }
-
-    /**
-     * Authentication mode
-     */
-    public static enum AuthMode {
-        /**
-         * Cloud compute instance metadata
-         */
-        METADATA,
-        /**
-         * Service account key file, path to the file
-         */
-        SAKEY,
-        /**
-         * Static credentials, username:password
-         */
-        STATIC,
-        /**
-         * Anonymous
-         */
-        NONE,
     }
 
     public static class Path {
@@ -920,6 +917,91 @@ public class YdbFs implements AutoCloseable {
             }
             return new Path(elements);
         }
+    }
+
+    private static class Queries {
+        final String readFile;
+        final String checkFile;
+        final String findFolder;
+        final String findFile;
+        final String upsertFile;
+        final String cleanupVersion;
+        final String upsertVersion;
+        final String upsertBytes;
+        final String upsertFolder;
+        final String moveFile;
+        final String moveFolder;
+        final String deleteFile;
+        final String listFolders;
+        final String listFiles;
+        final String deleteFolders;
+        final String freezeVersion;
+        final String lookubBlobCur;
+        final String lookubBlobRev;
+
+        Queries(String baseDir) {
+            this.readFile = text("read-file", baseDir);
+            this.checkFile = text("check-file", baseDir);
+            this.findFolder = text("find-folder", baseDir);
+            this.findFile = text("find-file", baseDir);
+            this.upsertFile = text("upsert-file", baseDir);
+            this.cleanupVersion = text("cleanup-version", baseDir);
+            this.upsertVersion = text("upsert-version", baseDir);
+            this.upsertBytes = text("upsert-bytes", baseDir);
+            this.upsertFolder = text("upsert-folder", baseDir);
+            this.moveFile = text("move-file", baseDir);
+            this.moveFolder = text("move-folder", baseDir);
+            this.deleteFile = text("delete-file", baseDir);
+            this.deleteFolders = text("delete-folders", baseDir);
+            this.listFolders = text("list-folders", baseDir);
+            this.listFiles = text("list-files", baseDir);
+            this.freezeVersion = text("freeze-version", baseDir);
+            this.lookubBlobCur = text("lookup-blob-cur", baseDir);
+            this.lookubBlobRev = text("lookup-blob-rev", baseDir);
+        }
+
+        private static final String DIR = packageName(YdbFs.class).replace('.', '/') + "/qtext/";
+
+        public static String text(String id, String baseDir) {
+            final StringBuilder sb = new StringBuilder();
+            sb.append("--!syntax_v1\n");
+            sb.append("PRAGMA TablePathPrefix(\"").append(baseDir).append("\");\n");
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            try (InputStream stream = loader.getResourceAsStream(DIR + id + ".sql")) {
+                BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(stream, StandardCharsets.UTF_8));
+                char[] buffer = new char[100];
+                int nchars;
+                while ((nchars=reader.read(buffer)) != -1) {
+                    sb.append(buffer, 0, nchars);
+                }
+            } catch(IOException ix) {
+                throw new IllegalStateException("Failed to load query text " + id, ix);
+            }
+            return sb.toString();
+        }
+    }
+
+    /**
+     * Authentication mode
+     */
+    public static enum AuthMode {
+        /**
+         * Cloud compute instance metadata
+         */
+        METADATA,
+        /**
+         * Service account key file, path to the file
+         */
+        SAKEY,
+        /**
+         * Static credentials, username:password
+         */
+        STATIC,
+        /**
+         * Anonymous
+         */
+        NONE,
     }
 
 }
