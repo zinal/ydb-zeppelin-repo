@@ -25,7 +25,6 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 import tech.ydb.auth.iam.CloudAuthHelper;
 import tech.ydb.core.Result;
-import tech.ydb.core.auth.AuthProvider;
 import tech.ydb.core.auth.StaticCredentials;
 import tech.ydb.core.grpc.GrpcTransport;
 import tech.ydb.core.grpc.GrpcTransportBuilder;
@@ -73,7 +72,7 @@ public class YdbFs implements AutoCloseable {
                 gtb.withAuthProvider(CloudAuthHelper.getMetadataAuthProvider());
                 break;
             case STATIC:
-                gtb.withAuthProvider(makeStaticAuthProvider(authData));
+                gtb.withAuthProvider(makeStaticCredentials(authData));
                 break;
             case SAKEY:
                 gtb.withAuthProvider(CloudAuthHelper.getServiceAccountFileAuthProvider(authData));
@@ -110,10 +109,10 @@ public class YdbFs implements AutoCloseable {
     public Map<String, Folder> listFolders() {
         final Map<String, Folder> m = new HashMap<>();
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
-            .orderedRead(false).timeout(Duration.ofMinutes(1))
+            .orderedRead(false)
             .columns("did", "dparent", "dname").build();
         try (Session session = tableClient.createSession(Duration.ofSeconds(10)).join().getValue()) {
-            session.readTable(basePath + "/zdir", settings, rs -> {
+            session.readTable(basePath + "/zdir", settings).start((ResultSetReader rs) -> {
                 final int did = rs.getColumnIndex("did");
                 final int dparent = rs.getColumnIndex("dparent");
                 final int dname = rs.getColumnIndex("dname");
@@ -137,10 +136,10 @@ public class YdbFs implements AutoCloseable {
     public Map<String, File> listFiles() {
         final Map<String, File> m = new HashMap<>();
         final ReadTableSettings settings = ReadTableSettings.newBuilder()
-            .orderedRead(false).timeout(Duration.ofMinutes(1))
+            .orderedRead(false)
             .columns("fid", "fparent", "fname", "vid").build();
         try (Session session = tableClient.createSession(Duration.ofSeconds(10)).join().getValue()) {
-            session.readTable(basePath + "/zfile", settings, rs -> {
+            session.readTable(basePath + "/zfile", settings).start((ResultSetReader rs) -> {
                 final int fid = rs.getColumnIndex("fid");
                 final int fparent = rs.getColumnIndex("fparent");
                 final int fname = rs.getColumnIndex("fname");
@@ -549,7 +548,7 @@ public class YdbFs implements AutoCloseable {
         return retval;
     }
 
-    private static AuthProvider makeStaticAuthProvider(String authData) {
+    private static StaticCredentials makeStaticCredentials(String authData) {
         int pos = authData.indexOf(":");
         if (pos < 0)
             return new StaticCredentials(authData, "");
@@ -576,7 +575,7 @@ public class YdbFs implements AutoCloseable {
     private static void compress(byte[] input, int offset, int length, ByteArrayOutputStream output) {
         if (input==null || input.length==0)
             return;
-        final Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION);
+        final Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
         deflater.setInput(input, offset, length);
         deflater.finish();
         final byte[] temp = new byte[4096];
