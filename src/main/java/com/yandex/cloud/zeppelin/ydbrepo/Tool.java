@@ -7,7 +7,6 @@ import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Properties;
-import java.util.UUID;
 
 /**
  *
@@ -43,6 +42,8 @@ public class Tool implements AutoCloseable {
             runRmDir(options);
         } else if ("checkpoint".equalsIgnoreCase(command)) {
             runCheckpoint(options);
+        } else if ("history".equalsIgnoreCase(command)) {
+            runHistory(options);
         } else {
             throw new IllegalArgumentException("Unsupported command: " + command);
         }
@@ -157,6 +158,26 @@ public class Tool implements AutoCloseable {
         }
         String vid = fs.checkpoint(file.id, path, message, author, Instant.now());
         System.out.println("** CHECKPOINT " + path + " -> " + vid);
+    }
+
+    public void runHistory(String[] options) throws Exception {
+        for (String path : options) {
+            history(path);
+        }
+    }
+
+    public void history(String path) throws Exception {
+        YdbFs.File file = fs.locateFileByPath(path);
+        if (file==null) {
+            System.out.println("** Path not found: " + path);
+            return;
+        }
+        System.out.println("** History for " + path);
+        System.out.println("** File id: " + file.id);
+        for (YdbFs.Revision r : fs.listHistory(file.id)) {
+            System.out.println("\t\t" + new java.util.Date(1000L * r.tv).toString()
+                    + "\t" + r.author + "\t" + r.message);
+        }
     }
 
     public static void main(String[] args) {

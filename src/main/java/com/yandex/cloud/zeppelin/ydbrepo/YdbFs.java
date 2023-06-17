@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -654,7 +655,16 @@ public class YdbFs implements AutoCloseable {
                 }
             }).join().expectSuccess();
         }
+        Collections.sort(retval, (o1, o2) -> cmplong(o1.tv, o2.tv));
         return retval;
+    }
+
+    private static int cmplong(long v1, long v2) {
+        if (v1==v2)
+            return 0;
+        if (v1>v2)
+            return 1;
+        return -1;
     }
 
     private static StaticCredentials makeStaticCredentials(String authData) {
