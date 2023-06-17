@@ -2,10 +2,12 @@
  * Author:  mzinal
  * Created: Jun 14, 2023
  *
+ * Schema creation:
  *   ydb scheme mkdir zeppelin
  *   ydb yql -f ydb-notebook-repo.sql
  *   ydb scheme ls zeppelin
  *
+ * Schema removal (all data will be dropped):
  *   ydb scheme rmdir -r -f zeppelin
  */
 
@@ -37,13 +39,24 @@ CREATE TABLE `zeppelin/zver` (
   AUTO_PARTITIONING_MAX_PARTITIONS_COUNT = 100
 );
 
+CREATE TABLE `zeppelin/zfile_name` (
+  fparent Text NOT NULL,
+  fname Text NOT NULL,
+  fid Text,
+  PRIMARY KEY(fparent, fname)
+) WITH (
+  AUTO_PARTITIONING_BY_SIZE = ENABLED,
+  AUTO_PARTITIONING_BY_LOAD = ENABLED,
+  AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 50,
+  AUTO_PARTITIONING_MAX_PARTITIONS_COUNT = 100
+);
+
 CREATE TABLE `zeppelin/zfile` (
   fid Text NOT NULL,
   fparent Text,
   fname Text,
   vid Text,
-  PRIMARY KEY(fid),
-  INDEX naming GLOBAL ON (fparent, fname)
+  PRIMARY KEY(fid)
 ) WITH (
   AUTO_PARTITIONING_BY_SIZE = ENABLED,
   AUTO_PARTITIONING_BY_LOAD = ENABLED,

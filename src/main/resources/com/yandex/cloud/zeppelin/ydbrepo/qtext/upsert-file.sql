@@ -5,3 +5,6 @@ DECLARE $vid AS Utf8;
 
 UPSERT INTO zfile(fid,fparent,fname,vid)
 VALUES($fid,$fparent,$fname,$vid);
+
+UPSERT INTO zfile_name(fid,fparent,fname)
+VALUES($fid,$fparent,$fname);
