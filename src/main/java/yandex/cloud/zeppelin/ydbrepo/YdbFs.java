@@ -1051,7 +1051,7 @@ public class YdbFs implements AutoCloseable {
             final StringBuilder sb = new StringBuilder();
             sb.append("--!syntax_v1\n");
             sb.append("PRAGMA TablePathPrefix(\"").append(baseDir).append("\");\n");
-            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            ClassLoader loader = YdbFs.class.getClassLoader();
             try (InputStream stream = loader.getResourceAsStream(DIR + id + ".sql")) {
                 if (stream==null)
                     throw new IOException("Resource not found");
