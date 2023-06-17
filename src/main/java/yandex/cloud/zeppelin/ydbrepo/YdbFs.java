@@ -388,7 +388,9 @@ public class YdbFs implements AutoCloseable {
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
                     "$fparent", PrimitiveValue.newText(parent.id),
-                    "$fname", PrimitiveValue.newText(pNewFile.tail()));
+                    "$fparent_old", PrimitiveValue.newText(file.parent),
+                    "$fname", PrimitiveValue.newText(pNewFile.tail()),
+                    "$fname_old", PrimitiveValue.newText(file.name));
             session.executeDataQuery(query.moveFile, tx, params)
                     .join().getValue();
             trans.commit().join().expectSuccess();
