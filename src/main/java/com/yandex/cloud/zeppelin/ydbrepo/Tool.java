@@ -40,10 +40,16 @@ public class Tool implements AutoCloseable {
             runExport(options);
         } else if ("rmdir".equalsIgnoreCase(command)) {
             runRmDir(options);
+        } else if ("rmfile".equalsIgnoreCase(command)) {
+            runRmFile(options);
         } else if ("checkpoint".equalsIgnoreCase(command)) {
             runCheckpoint(options);
         } else if ("history".equalsIgnoreCase(command)) {
             runHistory(options);
+        } else if ("mvdir".equalsIgnoreCase(command)) {
+            runMvDir(options);
+        } else if ("mvfile".equalsIgnoreCase(command)) {
+            runMvFile(options);
         } else {
             throw new IllegalArgumentException("Unsupported command: " + command);
         }
@@ -124,8 +130,48 @@ public class Tool implements AutoCloseable {
         }
     }
 
+    public void runRmFile(String[] options) throws Exception {
+        for (String path : options) {
+            YdbFs.File file = fs.locateFileByPath(path);
+            if (file==null) {
+                System.out.println("** File not found: " + path);
+            } else {
+                System.out.println("** Removing file " + path + " -> " + file.id);
+                fs.removeFile(file.id, path);
+            }
+        }
+    }
+
+    public void runMvDir(String[] options) throws Exception {
+        if (options.length != 2)
+            throw new IllegalArgumentException("Need exactly two arguments for mvdir");
+        String srcPath = options[0];
+        String dstPath = options[1];
+        System.out.println("** MVDIR " + srcPath + " to " + dstPath);
+        fs.moveFolder(srcPath, dstPath);
+    }
+
+    public void runMvFile(String[] options) throws Exception {
+        if (options.length != 2)
+            throw new IllegalArgumentException("Need exactly two arguments for mvfile");
+        String srcPath = options[0];
+        String dstPath = options[1];
+        YdbFs.File file = fs.locateFileByPath(srcPath);
+        if (file==null) {
+            throw new IllegalArgumentException("Source file not found: " + srcPath);
+        }
+        System.out.println("** MVFILE " + file.id + " to " + dstPath);
+        fs.moveFile(file.id, srcPath, dstPath);
+    }
+
     public void runExport(String[] options) throws Exception {
         File targetDir = (options.length == 0) ? new File(".") : new File(options[0]);
+        if (! targetDir.exists()) {
+            targetDir.mkdirs();
+        }
+        if (! targetDir.isDirectory()) {
+            throw new IllegalArgumentException("Not a directory: " + targetDir);
+        }
         YdbFs.FullList fullList = fs.listAll();
         for (YdbFs.File f : fullList.files.values()) {
             YdbFs.Path p = fullList.buildPath(f);
@@ -154,7 +200,7 @@ public class Tool implements AutoCloseable {
         String author = (options.length > 2) ? options[2] : "?";
         YdbFs.File file = fs.locateFileByPath(path);
         if (file==null) {
-            throw new IllegalArgumentException("Path not found: " + path);
+            throw new IllegalArgumentException("File not found: " + path);
         }
         String vid = fs.checkpoint(file.id, path, message, author, Instant.now());
         System.out.println("** CHECKPOINT " + path + " -> " + vid);
@@ -169,7 +215,7 @@ public class Tool implements AutoCloseable {
     public void history(String path) throws Exception {
         YdbFs.File file = fs.locateFileByPath(path);
         if (file==null) {
-            System.out.println("** Path not found: " + path);
+            System.out.println("** File not found: " + path);
             return;
         }
         System.out.println("** History for " + path);
