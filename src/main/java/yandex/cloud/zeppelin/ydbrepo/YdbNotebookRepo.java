@@ -1,4 +1,4 @@
-package com.yandex.cloud.zeppelin.ydbrepo;
+package yandex.cloud.zeppelin.ydbrepo;
 
 import io.micrometer.core.instrument.util.IOUtils;
 import java.io.ByteArrayInputStream;

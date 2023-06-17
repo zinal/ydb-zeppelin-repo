@@ -1,4 +1,4 @@
-package com.yandex.cloud.zeppelin.ydbrepo;
+package yandex.cloud.zeppelin.ydbrepo;
 
 import java.io.File;
 import java.io.FileInputStream;
