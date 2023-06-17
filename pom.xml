@@ -49,6 +49,11 @@
             <version>0.10.1</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.74</version>
+        </dependency>
     </dependencies>
 
     <profiles>
@@ -70,17 +75,32 @@
                                     <goal>shade</goal>
                                 </goals>
                                 <configuration>
-                                    <artifactSet>
-                                        <excludes>
-                                            <exclude>classworlds:classworlds</exclude>
-                                            <exclude>junit:junit</exclude>
-                                            <exclude>jmock:*</exclude>
-                                            <exclude>*:xml-apis</exclude>
-                                            <exclude>org.apache.maven:lib:tests</exclude>
-                                            <exclude>log4j:log4j:jar:</exclude>
-                                        </excludes>
-                                    </artifactSet>
+                                    <minimizeJar>true</minimizeJar>
                                     <filters>
+                                        <filter>
+                                            <artifact>io.jsonwebtoken:jjwt-impl</artifact>
+                                            <includes>
+                                                <include>**</include>
+                                            </includes>
+                                        </filter>
+                                        <filter>
+                                            <artifact>io.jsonwebtoken:jjwt-jackson</artifact>
+                                            <includes>
+                                                <include>**</include>
+                                            </includes>
+                                        </filter>
+                                        <filter>
+                                            <artifact>com.fasterxml.jackson.core:jackson-databind</artifact>
+                                            <includes>
+                                                <include>**</include>
+                                            </includes>
+                                        </filter>
+                                        <filter>
+                                            <artifact>org.bouncycastle:bcprov-jdk18on</artifact>
+                                            <includes>
+                                                <include>**</include>
+                                            </includes>
+                                        </filter>
                                         <filter>
                                             <artifact>*:*</artifact>
                                             <excludes>
@@ -96,10 +116,6 @@
                                     </filters>
                                     <relocations>
                                         <relocation>
-                                            <pattern>com.fasterxml</pattern>
-                                            <shadedPattern>yandex.shaded.fasterxml</shadedPattern>
-                                        </relocation>
-                                        <relocation>
                                             <pattern>com.google</pattern>
                                             <shadedPattern>yandex.shaded.google</shadedPattern>
                                         </relocation>
@@ -109,24 +125,6 @@
                                         </relocation>
                                     </relocations>
                                 </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <artifactId>maven-assembly-plugin</artifactId>
-                        <version>3.5.0</version>
-                        <configuration>
-                            <descriptors>
-                                <descriptor>src/main/assembly/zip.xml</descriptor>
-                            </descriptors>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>make-assembly</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>single</goal>
-                                </goals>
                             </execution>
                         </executions>
                     </plugin>
