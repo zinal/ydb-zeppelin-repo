@@ -1,7 +1,5 @@
 package yandex.cloud.zeppelin.ydbrepo;
 
-import io.micrometer.core.instrument.util.IOUtils;
-import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -33,7 +31,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     public static final String CONF_AUTH_DATA = "zeppelin.notebook.ydb.auth.data";
 
     private YdbFs fs;
-    private Charset encoding;
+    private Charset charset;
 
     private static String getConfString(ZeppelinConfiguration zc, String prop, String val) {
         String v = zc.getString(prop.toUpperCase().replace('.', '_'), prop, val);
@@ -56,7 +54,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
         if (baseDir.length() > 0 && !baseDir.endsWith("/"))
             baseDir = baseDir + "/";
 
-        this.encoding = Charset.forName(encoding);
+        this.charset = Charset.forName(encoding);
 
         try {
             this.fs = new YdbFs(url, YdbFs.AuthMode.valueOf(authMode), authData, baseDir);
@@ -100,7 +98,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
         String notePath = note.getPath();
         LOG.info("save {} [{}]", noteId, notePath);
         fs.saveFile(noteId, notePath, subject.getUser(),
-                note.toJson().getBytes(encoding));
+                note.toJson().getBytes(charset));
     }
 
     @Override
@@ -161,7 +159,6 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     public List<Revision> revisionHistory(String noteId, String notePath, AuthenticationInfo subject) throws IOException {
         return fs.listHistory(noteId).stream()
                 .map(r -> new Revision(r.rid, r.message, (int) r.tv))
-                .sorted((o1, o2) -> o1.time - o2.time)
                 .collect(Collectors.toList());
     }
 
@@ -176,8 +173,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     }
 
     private Note fromBytes(byte[] data, String noteId, String notePath) throws IOException {
-        String json = IOUtils.toString(new ByteArrayInputStream(data), encoding);
-        Note note = Note.fromJson(json);
+        Note note = Note.fromJson(new String(data, charset));
         note.setId(noteId);
         note.setPath(notePath);
         return note;
