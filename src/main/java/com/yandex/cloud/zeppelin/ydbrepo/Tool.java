@@ -5,6 +5,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
+import java.time.Instant;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -40,6 +41,8 @@ public class Tool implements AutoCloseable {
             runExport(options);
         } else if ("rmdir".equalsIgnoreCase(command)) {
             runRmDir(options);
+        } else if ("checkpoint".equalsIgnoreCase(command)) {
+            runCheckpoint(options);
         } else {
             throw new IllegalArgumentException("Unsupported command: " + command);
         }
@@ -105,7 +108,7 @@ public class Tool implements AutoCloseable {
             desc = fs.locateFileByPath(fullName);
         }
         if (desc == null) {
-            fid = UUID.randomUUID().toString();
+            fid = YdbFs.newId();
         } else {
             fid = desc.id;
         }
@@ -140,6 +143,20 @@ public class Tool implements AutoCloseable {
             Files.write(file.toPath(), fs.readFile(f.id, null),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         }
+    }
+
+    public void runCheckpoint(String[] options) throws Exception {
+        if (options.length == 0)
+            return;
+        String path = options[0];
+        String message = (options.length > 1) ? options[1] : "?";
+        String author = (options.length > 2) ? options[2] : "?";
+        YdbFs.File file = fs.locateFileByPath(path);
+        if (file==null) {
+            throw new IllegalArgumentException("Path not found: " + path);
+        }
+        String vid = fs.checkpoint(file.id, path, message, author, Instant.now());
+        System.out.println("** CHECKPOINT " + path + " -> " + vid);
     }
 
     public static void main(String[] args) {

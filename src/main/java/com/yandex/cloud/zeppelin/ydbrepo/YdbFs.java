@@ -6,11 +6,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Serializable;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -33,6 +35,7 @@ import tech.ydb.table.SessionRetryContext;
 import tech.ydb.table.TableClient;
 import tech.ydb.table.query.Params;
 import tech.ydb.table.result.ResultSetReader;
+import tech.ydb.table.settings.ExecuteScanQuerySettings;
 import tech.ydb.table.settings.ReadTableSettings;
 import tech.ydb.table.transaction.Transaction;
 import tech.ydb.table.transaction.TxControl;
@@ -631,6 +634,29 @@ public class YdbFs implements AutoCloseable {
         }).join().getValue();
     }
 
+    public List<Revision> listHistory(String fid) {
+        final List<Revision> retval = new ArrayList<>();
+        try (Session session = tableClient.createSession(Duration.ofSeconds(10)).join().getValue()) {
+            session.executeScanQuery(query.listRevisions,
+                    Params.of("$fid", PrimitiveValue.newText(fid)),
+                    ExecuteScanQuerySettings.newBuilder().build()).start((ResultSetReader rs) -> {
+                final int vid = rs.getColumnIndex("vid");
+                final int tv = rs.getColumnIndex("tv");
+                final int author = rs.getColumnIndex("author");
+                final int message = rs.getColumnIndex("message");
+                while (rs.next()) {
+                    retval.add(new Revision(
+                            rs.getColumn(vid).getText(),
+                            rs.getColumn(tv).getTimestamp(),
+                            rs.getColumn(author).getText(),
+                            rs.getColumn(message).getText()
+                    ));
+                }
+            }).join().expectSuccess();
+        }
+        return retval;
+    }
+
     private static StaticCredentials makeStaticCredentials(String authData) {
         int pos = authData.indexOf(":");
         if (pos < 0)
@@ -688,7 +714,11 @@ public class YdbFs implements AutoCloseable {
     }
 
     public static String newId() {
-        return UUID.randomUUID().toString();
+        final UUID uuid = UUID.randomUUID();
+        final ByteBuffer buffer = ByteBuffer.allocate(2 * Long.BYTES);
+        buffer.putLong(uuid.getLeastSignificantBits());
+        buffer.putLong(uuid.getMostSignificantBits());
+        return Base64.getUrlEncoder().encodeToString(buffer.array()).replace('=', ' ').trim();
     }
 
     private class VersionDao {
@@ -940,6 +970,26 @@ public class YdbFs implements AutoCloseable {
         }
     }
 
+    public static class Revision {
+        public String rid;
+        public long tv;
+        public String author;
+        public String message;
+
+        public Revision() {}
+
+        public Revision(String rid, long tv, String author, String message) {
+            this.rid = rid;
+            this.tv = tv;
+            this.author = author;
+            this.message = message;
+        }
+
+        public Revision(String rid, Instant tv, String author, String message) {
+            this(rid, (tv==null) ? -1L : tv.getEpochSecond(), author, message);
+        }
+    }
+
     private static class Queries {
         final String readFile;
         final String checkFile;
@@ -959,6 +1009,7 @@ public class YdbFs implements AutoCloseable {
         final String freezeVersion;
         final String lookubBlobCur;
         final String lookubBlobRev;
+        final String listRevisions;
 
         Queries(String baseDir) {
             this.readFile = text("read-file", baseDir);
@@ -979,6 +1030,7 @@ public class YdbFs implements AutoCloseable {
             this.freezeVersion = text("freeze-version", baseDir);
             this.lookubBlobCur = text("lookup-blob-cur", baseDir);
             this.lookubBlobRev = text("lookup-blob-rev", baseDir);
+            this.listRevisions = text("list-revisions", baseDir);
         }
 
         private static final String DIR = packageName(YdbFs.class).replace('.', '/') + "/qtext/";
@@ -989,6 +1041,8 @@ public class YdbFs implements AutoCloseable {
             sb.append("PRAGMA TablePathPrefix(\"").append(baseDir).append("\");\n");
             ClassLoader loader = Thread.currentThread().getContextClassLoader();
             try (InputStream stream = loader.getResourceAsStream(DIR + id + ".sql")) {
+                if (stream==null)
+                    throw new IOException("Resource not found");
                 BufferedReader reader = new BufferedReader(
                         new InputStreamReader(stream, StandardCharsets.UTF_8));
                 char[] buffer = new char[100];

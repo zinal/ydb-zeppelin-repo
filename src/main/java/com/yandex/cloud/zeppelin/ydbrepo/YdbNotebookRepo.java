@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import org.apache.zeppelin.conf.ZeppelinConfiguration;
 import org.apache.zeppelin.notebook.Note;
 import org.apache.zeppelin.notebook.NoteInfo;
@@ -130,7 +131,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
             AuthenticationInfo subject) throws IOException {
         Instant stamp = Instant.now();
         String vid = fs.checkpoint(noteId, notePath, checkpointMsg, subject.getUser(), stamp);
-        return new Revision(vid, vid, (int) stamp.getEpochSecond());
+        return new Revision(vid, checkpointMsg, (int) stamp.getEpochSecond());
     }
 
     @Override
@@ -143,7 +144,10 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public List<Revision> revisionHistory(String noteId, String notePath, AuthenticationInfo subject) throws IOException {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        return fs.listHistory(noteId).stream()
+                .map(r -> new Revision(r.rid, r.message, (int) r.tv))
+                .sorted((o1, o2) -> o1.time - o2.time)
+                .collect(Collectors.toList());
     }
 
     @Override
