@@ -24,6 +24,9 @@ import org.apache.zeppelin.user.AuthenticationInfo;
  */
 public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(YdbNotebookRepo.class);
+
     public static final String CONF_URL = "zeppelin.notebook.ydb.url";
     public static final String CONF_DIR = "zeppelin.notebook.ydb.dir";
     public static final String CONF_AUTH_MODE = "zeppelin.notebook.ydb.auth.mode";
@@ -58,8 +61,10 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
         try {
             this.fs = new YdbFs(url, YdbFs.AuthMode.valueOf(authMode), authData, baseDir);
         } catch(Exception ix) {
-            throw new IOException("YDB connection failed", ix);
+            throw new IOException("YDB pseudo-filesystem failed to open", ix);
         }
+
+        LOG.info("Connected to YDB notebook storage at {}", url);
     }
 
     @Override
@@ -82,6 +87,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public Note get(String noteId, String notePath, AuthenticationInfo subject) throws IOException {
+        LOG.info("get {} [{}]", noteId, notePath);
         byte[] data = fs.readFile(noteId, null);
         if (data==null)
             throw new FileNotFoundException(buildNoteFileName(noteId, notePath));
@@ -90,29 +96,36 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public void save(Note note, AuthenticationInfo subject) throws IOException {
-        fs.saveFile(note.getId(), note.getPath(), subject.getUser(),
+        String noteId = note.getId();
+        String notePath = note.getPath();
+        LOG.info("save {} [{}]", noteId, notePath);
+        fs.saveFile(noteId, notePath, subject.getUser(),
                 note.toJson().getBytes(encoding));
     }
 
     @Override
     public void move(String noteId, String notePath, String newNotePath,
               AuthenticationInfo subject) throws IOException {
+        LOG.info("moveNote [{}] -> [{}]", notePath, newNotePath);
         fs.moveFile(noteId, notePath, newNotePath);
     }
 
     @Override
     public void move(String folderPath, String newFolderPath,
               AuthenticationInfo subject) throws IOException {
+        LOG.info("moveFolder [{}] -> [{}]", folderPath, newFolderPath);
         fs.moveFolder(folderPath, newFolderPath);
     }
 
     @Override
     public void remove(String noteId, String notePath, AuthenticationInfo subject) throws IOException {
+        LOG.info("removeNote {} [{}]", noteId, notePath);
         fs.removeFile(noteId, notePath);
     }
 
     @Override
     public void remove(String folderPath, AuthenticationInfo subject) throws IOException {
+        LOG.info("removeFolder [{}]", folderPath);
         fs.removeFolder(folderPath);
     }
 
@@ -129,6 +142,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     @Override
     public Revision checkpoint(String noteId, String notePath, String checkpointMsg,
             AuthenticationInfo subject) throws IOException {
+        LOG.info("checkpoint {} [{}]: {}", noteId, notePath, checkpointMsg);
         Instant stamp = Instant.now();
         String vid = fs.checkpoint(noteId, notePath, checkpointMsg, subject.getUser(), stamp);
         return new Revision(vid, checkpointMsg, (int) stamp.getEpochSecond());
@@ -136,6 +150,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public Note get(String noteId, String notePath, String revId, AuthenticationInfo subject) throws IOException {
+        LOG.info("getVersion {} [{}] at {}", noteId, notePath, revId);
         byte[] data = fs.readFile(noteId, revId);
         if (data==null)
             throw new FileNotFoundException(buildNoteFileName(noteId, notePath));
@@ -152,6 +167,7 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     @Override
     public Note setNoteRevision(String noteId, String notePath, String revId, AuthenticationInfo subject) throws IOException {
+        LOG.info("switch {} [{}] to {}", noteId, notePath, revId);
         byte[] data = fs.readFile(noteId, revId);
         if (data==null)
             throw new FileNotFoundException(buildNoteFileName(noteId, notePath));
@@ -161,7 +177,8 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     private Note fromBytes(byte[] data, String noteId, String notePath) throws IOException {
         String json = IOUtils.toString(new ByteArrayInputStream(data), encoding);
-        Note note = Note.fromJson(noteId, json);
+        Note note = Note.fromJson(json);
+        note.setId(noteId);
         note.setPath(notePath);
         return note;
     }
