@@ -13,6 +13,15 @@
     <name>Zeppelin: Plugin YdbNotebookRepo</name>
     <description>NotebookRepo implementation based on YDB</description>
 
+    <properties>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <maven.source.skip>true</maven.source.skip>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>tech.ydb</groupId>
@@ -38,12 +47,47 @@
             <groupId>org.apache.zeppelin</groupId>
             <artifactId>zeppelin-zengine</artifactId>
             <version>0.10.1</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
-    <properties>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    </properties>
+
+    <profiles><profile>
+      <id>release-profile</id>
+      <activation><activeByDefault>true</activeByDefault></activation>
+      <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <descriptors>
+                        <descriptor>src/main/assembly/zip.xml</descriptor>
+                    </descriptors>
+                </configuration>
+                <executions>
+                    <execution>
+                         <id>make-assembly</id>
+                         <phase>package</phase>
+                         <goals><goal>single</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <archive>
+                        <compress>true</compress>
+                        <manifest>
+                            <addClasspath>true</addClasspath>
+<!--                            <classpathPrefix>lib/</classpathPrefix> -->
+                            <mainClass>com.yandex.cloud.zeppelin.ydbrepo.Tool</mainClass>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+      </build>
+    </profile></profiles>
 </project>
