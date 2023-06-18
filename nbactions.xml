@@ -12,8 +12,8 @@
             <properties>
                 <exec.vmArgs></exec.vmArgs>
                 <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
-                <exec.appArgs>sample-config.xml export /tmp/xport</exec.appArgs>
-                <exec.mainClass>com.yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
+                <exec.appArgs>scripts/sample-config.xml export1 /tmp/xport</exec.appArgs>
+                <exec.mainClass>yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
                 <exec.executable>java</exec.executable>
             </properties>
         </action>
@@ -29,8 +29,8 @@
             <properties>
                 <exec.vmArgs>-agentlib:jdwp=transport=dt_socket,server=n,address=${jpda.address}</exec.vmArgs>
                 <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
-                <exec.appArgs>sample-config.xml export /tmp/xport</exec.appArgs>
-                <exec.mainClass>com.yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
+                <exec.appArgs>scripts/sample-config.xml export1 /tmp/xport</exec.appArgs>
+                <exec.mainClass>yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
                 <exec.executable>java</exec.executable>
                 <jpda.listen>true</jpda.listen>
             </properties>
@@ -47,9 +47,9 @@
             <properties>
                 <exec.vmArgs></exec.vmArgs>
                 <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
-                <exec.mainClass>com.yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
+                <exec.mainClass>yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
                 <exec.executable>java</exec.executable>
-                <exec.appArgs>sample-config.xml export /tmp/xport</exec.appArgs>
+                <exec.appArgs>scripts/sample-config.xml export1 /tmp/xport</exec.appArgs>
             </properties>
         </action>
     </actions>

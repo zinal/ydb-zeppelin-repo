@@ -33,7 +33,7 @@ public class Tool implements AutoCloseable {
         fileNameMangling = Boolean.parseBoolean(config.getProperty(PROP_FNAME_MANGLE, "true"));
     }
 
-    public void run(String command, String[] options) throws Exception {
+    public boolean run(String command, String[] options) throws Exception {
         if ("import".equalsIgnoreCase(command)) {
             runImport(options);
         } else if ("export".equalsIgnoreCase(command)) {
@@ -51,8 +51,9 @@ public class Tool implements AutoCloseable {
         } else if ("mvfile".equalsIgnoreCase(command)) {
             runMvFile(options);
         } else {
-            throw new IllegalArgumentException("Unsupported command: " + command);
+            return false;
         }
+        return true;
     }
 
     public void runImport(String[] options) throws Exception {
@@ -226,9 +227,23 @@ public class Tool implements AutoCloseable {
         }
     }
 
+    private static void printUsage() {
+        System.out.println("USAGE: Tool config.xml command ...");
+        System.out.println("\tValid commands are:");
+        System.out.println("\t\t IMPORT /path/to/dir");
+        System.out.println("\t\t IMPORT /path/to/file");
+        System.out.println("\t\t EXPORT /path/to/dir");
+        System.out.println("\t\t RMDIR DirName");
+        System.out.println("\t\t RMFILE DirName/NoteName");
+        System.out.println("\t\t CHECKPOINT DirName/NoteName Message? Author?");
+        System.out.println("\t\t HISTORY DirName/NoteName");
+        System.out.println("\t\t MVDIR OldDirPath NewDirPath");
+        System.out.println("\t\t MVFILE OldFilePath NewFilePath");
+    }
+
     public static void main(String[] args) {
         if (args.length < 2) {
-            System.out.println("USAGE: Tool config.xml command ...");
+            printUsage();
             System.exit(2);
         }
         String[] options = new String[args.length - 2];
@@ -239,7 +254,11 @@ public class Tool implements AutoCloseable {
                 config.loadFromXML(fis);
             }
             try (Tool tool = new Tool(config)) {
-                tool.run(args[1], options);
+                if (! tool.run(args[1], options) ) {
+                    System.err.println("ERROR: unknown command [" + args[1] + "]");
+                    printUsage();
+                    System.exit(2);
+                }
             }
         } catch(Exception ex) {
             ex.printStackTrace(System.err);
