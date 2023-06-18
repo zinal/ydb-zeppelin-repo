@@ -4,7 +4,7 @@
   <groupId>yandex.cloud</groupId>
   <artifactId>zeppelin-notebookrepo-ydb</artifactId>
   <name>Zeppelin: Plugin YdbNotebookRepo</name>
-  <version>1.0-SNAPSHOT</version>
+  <version>1.0</version>
   <description>NotebookRepo implementation based on YDB</description>
   <profiles>
     <profile>
