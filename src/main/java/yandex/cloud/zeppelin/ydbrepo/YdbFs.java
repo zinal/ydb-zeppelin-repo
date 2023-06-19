@@ -60,6 +60,12 @@ public class YdbFs implements AutoCloseable {
     private final SessionRetryContext retryContext;
     private final Queries query;
 
+    private static final CompletableFuture<Result<Boolean>> ASYNC_TRUE =
+            CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+
+    private static final CompletableFuture<Result<Boolean>> ASYNC_FALSE =
+            CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
+
     /**
      * Initializing constructor.
      *
@@ -190,9 +196,9 @@ public class YdbFs implements AutoCloseable {
                 bid = lookupBlobRev(txh, fid, vid);
             }
             if (bid==null)
-                return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
+                return ASYNC_FALSE;
             readFile(txh, bid, data);
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            return ASYNC_TRUE;
         }).join().getValue();
 
         if (! hasFile)
@@ -265,13 +271,21 @@ public class YdbFs implements AutoCloseable {
         // Compression moved out of transaction
         final List<byte[]> compressed = blockCompress(data);
         return retryContext.supplyResult(session -> {
+            String actualFid = fid;
             final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
-            final VersionDao vc = new VersionDao(txh, path, fid);
+            // Check if file exists and whether its current version is frozen.
+            final File file;
+            if (fid==null) {
+                file = locateFileByPath(txh, path);
+                if (file!=null)
+                    actualFid = file.id;
+            } else {
+                file = locateFile(txh, fid);
+            }
+            final VersionDao vc = new VersionDao(txh, path, actualFid);
             vc.frozen = false;
             vc.author = author;
             vc.message = "-";
-            // Check if file exists and whether its current version is frozen.
-            File file = locateFile(txh, fid);
             if (file == null || file.isNull()) {
                 vc.createFile(compressed);
             } else if (file.frozen) {
@@ -281,10 +295,16 @@ public class YdbFs implements AutoCloseable {
                 vc.replaceVersion(compressed);
             }
             txh.commit();
-            return CompletableFuture.completedFuture(Result.success(file==null));
+            return (file==null) ? ASYNC_TRUE : ASYNC_FALSE;
         }).join().getValue();
     }
 
+    /**
+     * Locate file description by file id.
+     *
+     * @param fid File id
+     * @return File description, or null if file id was not found.
+     */
     public File locateFile(String fid) {
         File f = retryContext.supplyResult(session -> {
             final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
@@ -309,24 +329,43 @@ public class YdbFs implements AutoCloseable {
         return file;
     }
 
+    /**
+     * Locate file description by file path.
+     *
+     * @param path File path
+     * @return File description, or null if file path was not found.
+     */
     public File locateFileByPath(String path) {
-        final Path pFile = new Path(path);
-        final Path pDir = new Path(pFile, 1);
         File f = retryContext.supplyResult(session -> {
             final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
-            Folder dir = locateFolder(txh, pDir);
-            if (dir==null)
-                return CompletableFuture.completedFuture(Result.success(NULL_FILE));
-            File tmp = locateFile(txh, dir.id, pFile.tail());
-            if (tmp==null)
-                tmp = NULL_FILE;
-            return CompletableFuture.completedFuture(Result.success(tmp));
+            File file = locateFileByPath(txh, path);
+            if (file==null)
+                file = NULL_FILE;
+            return CompletableFuture.completedFuture(Result.success(file));
         }).join().getValue();
-        if (f.isNull())
+        if (f==null || f.isNull())
             return null;
         return f;
     }
 
+    private File locateFileByPath(TxHandler txh, String path) {
+        final Path pFile = new Path(path);
+        final Path pDir = new Path(pFile, 1);
+
+        Folder dir = locateFolder(txh, pDir);
+        if (dir==null)
+            return null;
+        return locateFile(txh, dir.id, pFile.tail());
+    }
+
+    /**
+     * Locate file description by directory id and file name.
+     *
+     * @param fparent Directory id
+     * @param fname File name (the last part of file path)
+     * @return File description, or null if directory id is unknown
+     *         or file with that name was not found.
+     */
     public File locateFile(String fparent, String fname) {
         File f = retryContext.supplyResult(session -> {
             final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
@@ -369,21 +408,26 @@ public class YdbFs implements AutoCloseable {
         retryContext.supplyResult(session -> {
             final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
             // Obtain the file id
-            File file = locateFile(txh, fid);
+            final File file;
+            if (fid==null) {
+                file = locateFileByPath(txh, oldPath);
+            } else {
+                file = locateFile(txh, fid);
+            }
             if (file==null)
                 throw new RuntimeException("File not found: " + oldPath);
             // Create the destination folder
             Folder parent = createFolder(txh, pNewDir);
             // Move the file to the new destination folder
             Params params = Params.of(
-                    "$fid", PrimitiveValue.newText(fid),
+                    "$fid", PrimitiveValue.newText(file.id),
                     "$fparent", PrimitiveValue.newText(parent.id),
                     "$fparent_old", PrimitiveValue.newText(file.parent),
                     "$fname", PrimitiveValue.newText(pNewFile.tail()),
                     "$fname_old", PrimitiveValue.newText(file.name));
             txh.executeDataQuery(query.moveFile, params);
             txh.commit();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            return ASYNC_TRUE;
         }).join().getValue();
     }
 
@@ -419,10 +463,16 @@ public class YdbFs implements AutoCloseable {
             );
             txh.executeDataQuery(query.moveFolder, params);
             txh.commit();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            return ASYNC_TRUE;
         }).join().getValue();
     }
 
+    /**
+     * Find directory id by directory path.
+     *
+     * @param folderPath Directory path
+     * @return Directory id, or null if path was not found.
+     */
     public String locateFolder(String folderPath) {
         final Path pFolder = new Path(folderPath);
         String fid = retryContext.supplyResult(session -> {
@@ -485,23 +535,27 @@ public class YdbFs implements AutoCloseable {
      *
      * @param fid The file id to be removed.
      * @param path Path to the file to be removed.
-     * @return true, if the file was actually deleted, false otherwise (only when path==null)
      */
-    public boolean removeFile(String fid, String path) {
-        return retryContext.supplyResult(session -> {
+    public void removeFile(String fid, String path) {
+        retryContext.supplyResult(session -> {
             final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
-            File file = locateFile(txh, fid);
-            if (file==null) {
-                if (path!=null) {
+            if (path != null) {
+                // fid by path retrieval or fid validation
+                File file;
+                if (fid==null) {
+                    file = locateFileByPath(txh, path);
+                } else {
+                    file = locateFile(txh, fid);
+                }
+                if (file==null) {
                     throw new RuntimeException("Path not found: " + path);
                 }
-                return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
             }
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid));
             txh.executeDataQuery(query.deleteFile, params);
             txh.commit();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            return ASYNC_TRUE;
         }).join().getValue();
     }
 
@@ -531,7 +585,7 @@ public class YdbFs implements AutoCloseable {
                     work.push(subDir);
                 }
             }
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            return ASYNC_TRUE;
         }).join().getValue();
         // Dropping files one by one, file per transaction (slow! but safer)
         for (String fid : files) {
@@ -550,7 +604,7 @@ public class YdbFs implements AutoCloseable {
             retryContext.supplyResult(session -> {
                 session.executeDataQuery(query.deleteFolders,
                         TxControl.serializableRw().setCommitTx(true), params).join().getValue();
-                return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+                return ASYNC_TRUE;
             }).join().getValue();
         }
     }
@@ -581,16 +635,28 @@ public class YdbFs implements AutoCloseable {
         return retval;
     }
 
+    /**
+     * Add the version checkpoint to the specified file.
+     *
+     * @param fid File id
+     * @param path File path
+     * @param message
+     * @param author
+     * @param stamp
+     * @return
+     */
     public String checkpoint(String fid, String path, 
             String message, String author, Instant stamp) {
         return retryContext.supplyResult(session -> {
             final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
-            File file = locateFile(txh, fid);
+            File file;
+            if (fid==null) {
+                file = locateFileByPath(txh, path);
+            } else {
+                file = locateFile(txh, fid);
+            }
             if (file==null) {
-                if (path!=null) {
-                    throw new RuntimeException("Path not found: " + path);
-                }
-                return CompletableFuture.completedFuture(Result.success(""));
+                throw new RuntimeException("Path not found: " + path);
             }
             final String versionId;
             if (file.frozen) {
