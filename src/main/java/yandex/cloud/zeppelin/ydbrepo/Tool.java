@@ -72,7 +72,7 @@ public class Tool implements AutoCloseable {
         } else if (f.isDirectory()) {
             for (File fx : f.listFiles(
                     (File dir1, String name) -> !(name.startsWith(".")))) {
-                importObject("", fx);
+                importObject("", fx, null);
             }
         } else {
             throw new IOException("Illegal file type: " + object);
@@ -80,21 +80,30 @@ public class Tool implements AutoCloseable {
     }
 
     public void importObject(String basePath, String fname) throws Exception {
-        importObject(basePath, new File(fname));
+        importObject(basePath, new File(fname), null);
     }
 
-    public void importObject(String basePath, File f) throws Exception {
+    public void importObject(String basePath, File f, String folderId) throws Exception {
         if (f.isFile()) {
-            importFile(basePath, f);
+            importFile(basePath, f, folderId);
         } else if (f.isDirectory()) {
+            String folderPath = basePath + "/" + f.getName();
+            String folderHint = null;
             for (File fx : f.listFiles(
                     (File dir1, String name) -> !(name.startsWith(".")))) {
-                importObject(basePath + "/" + f.getName(), fx);
+                if (folderHint == null) {
+                    folderHint = fs.locateFolder(folderPath);
+                }
+                importObject(folderPath, fx, folderHint);
             }
         }
     }
 
     public void importFile(String basePath, File f) throws Exception {
+        importFile(basePath, f, null);
+    }
+
+    public void importFile(String basePath, File f, String folderId) throws Exception {
         String fullName = basePath + "/" + f.getName();
         String fid = null;
         if (fileNameMangling) {
@@ -113,7 +122,12 @@ public class Tool implements AutoCloseable {
             desc = fs.locateFile(fid);
         }
         if (desc == null) {
-            desc = fs.locateFileByPath(fullName);
+            if (folderId==null) {
+                desc = fs.locateFileByPath(fullName);
+            } else {
+                // Faster option when we already know the folder id.
+                desc = fs.locateFile(folderId, new YdbFs.Path(fullName).tail());
+            }
         }
         if (desc == null) {
             fid = YdbFs.newId();

@@ -12,7 +12,7 @@
             <properties>
                 <exec.vmArgs></exec.vmArgs>
                 <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
-                <exec.appArgs>scripts/sample-config.xml export1 /tmp/xport</exec.appArgs>
+                <exec.appArgs>scripts/sample-config.xml import .</exec.appArgs>
                 <exec.mainClass>yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
                 <exec.executable>java</exec.executable>
             </properties>
@@ -29,7 +29,7 @@
             <properties>
                 <exec.vmArgs>-agentlib:jdwp=transport=dt_socket,server=n,address=${jpda.address}</exec.vmArgs>
                 <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
-                <exec.appArgs>scripts/sample-config.xml export1 /tmp/xport</exec.appArgs>
+                <exec.appArgs>scripts/sample-config.xml import .</exec.appArgs>
                 <exec.mainClass>yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
                 <exec.executable>java</exec.executable>
                 <jpda.listen>true</jpda.listen>
@@ -49,7 +49,7 @@
                 <exec.args>${exec.vmArgs} -classpath %classpath ${exec.mainClass} ${exec.appArgs}</exec.args>
                 <exec.mainClass>yandex.cloud.zeppelin.ydbrepo.Tool</exec.mainClass>
                 <exec.executable>java</exec.executable>
-                <exec.appArgs>scripts/sample-config.xml export1 /tmp/xport</exec.appArgs>
+                <exec.appArgs>scripts/sample-config.xml import .</exec.appArgs>
             </properties>
         </action>
     </actions>
