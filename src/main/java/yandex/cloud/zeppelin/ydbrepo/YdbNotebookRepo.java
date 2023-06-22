@@ -2,6 +2,7 @@ package yandex.cloud.zeppelin.ydbrepo;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -33,6 +34,21 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
 
     private YdbFs fs;
     private Charset charset;
+
+    private static Method fromJson1;
+    private static Method fromJson2;
+    static {
+        try {
+            fromJson1 = Note.class.getDeclaredMethod("fromJson", String.class);
+        } catch(Exception ex) {
+            fromJson1 = null;
+        }
+        try {
+            fromJson2 = Note.class.getDeclaredMethod("fromJson", String.class, String.class);
+        } catch(Exception ex) {
+            fromJson2 = null;
+        }
+    }
 
     private static String getConfString(ZeppelinConfiguration zc, String prop, String val) {
         String v = zc.getString(prop.toUpperCase().replace('.', '_'), prop, val);
@@ -174,12 +190,17 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     }
 
     private Note fromBytes(byte[] data, String noteId, String notePath) throws IOException {
-        Note note = Note.getGSON().fromJson(new String(data, charset), Note.class);
-        for (Paragraph p : note.getParagraphs()) {
-            p.settings.convertOldInput();
+        final String json = new String(data, charset);
+        final Note note;
+        try {
+            if (fromJson1 != null) {
+                note = (Note) fromJson1.invoke(null, json);
+            } else {
+                note = (Note) fromJson2.invoke(null, noteId, json);
+            }
+        } catch(Exception ex) {
+            throw new IOException("Failed invocation of method Note.fromJson()", ex);
         }
-        note.getInfo().remove("isRunning");
-        note.postProcessParagraphs();
         note.setId(noteId);
         note.setPath(notePath);
         return note;
