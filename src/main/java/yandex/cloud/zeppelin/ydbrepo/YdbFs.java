@@ -34,11 +34,12 @@ import tech.ydb.core.grpc.GrpcTransportBuilder;
 import tech.ydb.table.Session;
 import tech.ydb.table.SessionRetryContext;
 import tech.ydb.table.TableClient;
+import tech.ydb.table.query.DataQueryResult;
 import tech.ydb.table.query.Params;
 import tech.ydb.table.result.ResultSetReader;
+import tech.ydb.table.settings.CommitTxSettings;
 import tech.ydb.table.settings.ExecuteScanQuerySettings;
 import tech.ydb.table.settings.ReadTableSettings;
-import tech.ydb.table.transaction.Transaction;
 import tech.ydb.table.transaction.TxControl;
 import tech.ydb.table.values.Value;
 import tech.ydb.table.values.ListValue;
@@ -58,6 +59,12 @@ public class YdbFs implements AutoCloseable {
     private final TableClient tableClient;
     private final SessionRetryContext retryContext;
     private final Queries query;
+
+    private static final CompletableFuture<Result<Boolean>> ASYNC_TRUE =
+            CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+
+    private static final CompletableFuture<Result<Boolean>> ASYNC_FALSE =
+            CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
 
     /**
      * Initializing constructor.
@@ -181,17 +188,17 @@ public class YdbFs implements AutoCloseable {
         final List<byte[]> data = new ArrayList<>();
 
         boolean hasFile = retryContext.supplyResult(session -> {
-            final TxControl<?> tx = TxControl.onlineRo();
+            final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
             String bid;
             if (vid==null || vid.length()==0) {
-                bid = lookupBlobCur(session, tx, fid);
+                bid = lookupBlobCur(txh, fid);
             } else {
-                bid = lookupBlobRev(session, tx, fid, vid);
+                bid = lookupBlobRev(txh, fid, vid);
             }
             if (bid==null)
-                return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
-            readFile(session, tx, bid, data);
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+                return ASYNC_FALSE;
+            readFile(txh, bid, data);
+            return ASYNC_TRUE;
         }).join().getValue();
 
         if (! hasFile)
@@ -205,58 +212,44 @@ public class YdbFs implements AutoCloseable {
         return baos.toByteArray();
     }
 
-    private String lookupBlobCur(Session session, TxControl<?> tx, String fid) {
-        String bid = session.executeDataQuery(
-                query.lookubBlobCur, tx, Params.of("$fid", PrimitiveValue.newText(fid)))
-            .thenApply(Result::getValue)
-            .thenApply(result -> {
-                ResultSetReader rsr = result.getResultSet(0);
-                if (!rsr.next())
-                    return "";
-                return rsr.getColumn(0).getText();
-            }).join();
+    private String lookupBlobCur(TxHandler txh, String fid) {
+        ResultSetReader rsr = txh.executeDataQuery(query.lookubBlobCur,
+                Params.of("$fid", PrimitiveValue.newText(fid))).getResultSet(0);
+        if (!rsr.next())
+            return "";
+        String bid = rsr.getColumn(0).getText();
         return (bid==null || bid.length()==0) ? null : bid;
     }
 
-    private String lookupBlobRev(Session session, TxControl<?> tx, String fid, String vid) {
-        String bid = session.executeDataQuery(
-                query.lookubBlobRev, tx, Params.of(
-                        "$fid", PrimitiveValue.newText(fid),
-                        "$vid", PrimitiveValue.newText(vid)))
-            .thenApply(Result::getValue)
-            .thenApply(result -> {
-                ResultSetReader rsr = result.getResultSet(0);
-                if (!rsr.next())
-                    return "";
-                return rsr.getColumn(0).getText();
-            }).join();
+    private String lookupBlobRev(TxHandler txh, String fid, String vid) {
+        ResultSetReader rsr = txh.executeDataQuery(query.lookubBlobRev,
+                Params.of("$fid", PrimitiveValue.newText(fid),
+                        "$vid", PrimitiveValue.newText(vid))).getResultSet(0);
+        if (!rsr.next())
+            return "";
+        String bid = rsr.getColumn(0).getText();
         return (bid==null || bid.length()==0) ? null : bid;
     }
 
-    private void readFile(Session session, TxControl<?> tx, String bid, List<byte[]> data) {
+    private void readFile(TxHandler txh, String bid, List<byte[]> data) {
         final int limit = 10;
         final PrimitiveValue vlimit = PrimitiveValue.newInt32(limit);
         final PrimitiveValue vbid = PrimitiveValue.newText(bid);
 
-        final int[] pos = new int[] { -1 };
+        int pos = -1;
         int count;
         do {
+            count = 0;
             Params params = Params.of("$bid", vbid, "$limit", vlimit,
-                    "$pos", PrimitiveValue.newInt32(pos[0]));
-            count = session.executeDataQuery(query.readFile, tx, params)
-                    .thenApply(Result::getValue)
-                    .thenApply(result -> {
-                        int localCount = 0;
-                        ResultSetReader rsr = result.getResultSet(0);
-                        while (rsr.next()) {
-                            data.add(rsr.getColumn(0).getBytes());
-                            int curPos = rsr.getColumn(1).getInt32();
-                            if (curPos > pos[0])
-                                pos[0] = curPos;
-                            ++localCount;
-                        }
-                        return localCount;
-                    }).join();
+                    "$pos", PrimitiveValue.newInt32(pos));
+            ResultSetReader rsr = txh.executeDataQuery(query.readFile, params).getResultSet(0);
+            while (rsr.next()) {
+                data.add(rsr.getColumn(0).getBytes());
+                int curPos = rsr.getColumn(1).getInt32();
+                if (curPos > pos)
+                    pos = curPos;
+                ++count;
+            }
         } while (count >= limit);
     }
 
@@ -278,16 +271,21 @@ public class YdbFs implements AutoCloseable {
         // Compression moved out of transaction
         final List<byte[]> compressed = blockCompress(data);
         return retryContext.supplyResult(session -> {
-            final Transaction trans = session
-                    .beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
-                    .join().getValue();
-            final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
-            final VersionDao vc = new VersionDao(session, tx, path, fid);
+            String actualFid = fid;
+            final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
+            // Check if file exists and whether its current version is frozen.
+            final File file;
+            if (fid==null) {
+                file = locateFileByPath(txh, path);
+                if (file!=null)
+                    actualFid = file.id;
+            } else {
+                file = locateFile(txh, fid);
+            }
+            final VersionDao vc = new VersionDao(txh, path, actualFid);
             vc.frozen = false;
             vc.author = author;
             vc.message = "-";
-            // Check if file exists and whether its current version is frozen.
-            File file = locateFile(session, tx, fid);
             if (file == null || file.isNull()) {
                 vc.createFile(compressed);
             } else if (file.frozen) {
@@ -296,27 +294,31 @@ public class YdbFs implements AutoCloseable {
                 vc.vid = file.version;
                 vc.replaceVersion(compressed);
             }
-            trans.commit().join().expectSuccess();
-            return CompletableFuture.completedFuture(Result.success(file==null));
+            txh.commit();
+            return (file==null) ? ASYNC_TRUE : ASYNC_FALSE;
         }).join().getValue();
     }
 
+    /**
+     * Locate file description by file id.
+     *
+     * @param fid File id
+     * @return File description, or null if file id was not found.
+     */
     public File locateFile(String fid) {
         File f = retryContext.supplyResult(session -> {
-            final TxControl<?> tx = TxControl.onlineRo();
+            final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
             return CompletableFuture.completedFuture(Result.success(
-                    locateFile(session, tx, fid) ));
+                    locateFile(txh, fid) ));
         }).join().getValue();
         if (f.isNull())
             return null;
         return f;
     }
 
-    private File locateFile(Session session, TxControl<?> tx, String fid) {
+    private File locateFile(TxHandler txh, String fid) {
         Params params = Params.of("$fid", PrimitiveValue.newText(fid));
-        ResultSetReader rsr = session.executeDataQuery(query.checkFile, tx, params)
-                .thenApply(Result::getValue)
-                .thenApply(result -> result.getResultSet(0)).join();
+        ResultSetReader rsr = txh.executeDataQuery(query.checkFile, params).getResultSet(0);
         if (! rsr.next() )
             return NULL_FILE;
         File file = new File(fid,
@@ -327,15 +329,47 @@ public class YdbFs implements AutoCloseable {
         return file;
     }
 
+    /**
+     * Locate file description by file path.
+     *
+     * @param path File path
+     * @return File description, or null if file path was not found.
+     */
     public File locateFileByPath(String path) {
+        File f = retryContext.supplyResult(session -> {
+            final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
+            File file = locateFileByPath(txh, path);
+            if (file==null)
+                file = NULL_FILE;
+            return CompletableFuture.completedFuture(Result.success(file));
+        }).join().getValue();
+        if (f==null || f.isNull())
+            return null;
+        return f;
+    }
+
+    private File locateFileByPath(TxHandler txh, String path) {
         final Path pFile = new Path(path);
         final Path pDir = new Path(pFile, 1);
+
+        Folder dir = locateFolder(txh, pDir);
+        if (dir==null)
+            return null;
+        return locateFile(txh, dir.id, pFile.tail());
+    }
+
+    /**
+     * Locate file description by directory id and file name.
+     *
+     * @param fparent Directory id
+     * @param fname File name (the last part of file path)
+     * @return File description, or null if directory id is unknown
+     *         or file with that name was not found.
+     */
+    public File locateFile(String fparent, String fname) {
         File f = retryContext.supplyResult(session -> {
-            final TxControl<?> tx = TxControl.onlineRo();
-            Folder dir = locateFolder(session, tx, pDir);
-            if (dir==null)
-                return CompletableFuture.completedFuture(Result.success(NULL_FILE));
-            File tmp = locateFile(session, tx, dir.id, pFile.tail());
+            final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
+            File tmp = locateFile(txh, fparent, fname);
             if (tmp==null)
                 tmp = NULL_FILE;
             return CompletableFuture.completedFuture(Result.success(tmp));
@@ -345,12 +379,10 @@ public class YdbFs implements AutoCloseable {
         return f;
     }
 
-    private File locateFile(Session session, TxControl<?> tx, String fparent, String fname) {
+    private File locateFile(TxHandler txh, String fparent, String fname) {
         Params params = Params.of("$fname", PrimitiveValue.newText(fname),
                 "$fparent", PrimitiveValue.newText(fparent));
-        ResultSetReader rsr = session.executeDataQuery(query.findFile, tx, params)
-                .thenApply(Result::getValue)
-                .thenApply(result -> result.getResultSet(0)).join();
+        ResultSetReader rsr = txh.executeDataQuery(query.findFile, params).getResultSet(0);
         if (! rsr.next() )
             return null;
         File file = new File(rsr.getColumn(0).getText(),
@@ -374,34 +406,35 @@ public class YdbFs implements AutoCloseable {
         final Path pNewDir = new Path(pNewFile, 1);
 
         retryContext.supplyResult(session -> {
-            final Transaction trans = session.
-                    beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
-                    .join().getValue();
-            final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
+            final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
             // Obtain the file id
-            File file = locateFile(session, tx, fid);
+            final File file;
+            if (fid==null) {
+                file = locateFileByPath(txh, oldPath);
+            } else {
+                file = locateFile(txh, fid);
+            }
             if (file==null)
                 throw new RuntimeException("File not found: " + oldPath);
             // Create the destination folder
-            Folder parent = createFolder(session, tx, pNewDir);
+            Folder parent = createFolder(txh, pNewDir);
             // Move the file to the new destination folder
             Params params = Params.of(
-                    "$fid", PrimitiveValue.newText(fid),
+                    "$fid", PrimitiveValue.newText(file.id),
                     "$fparent", PrimitiveValue.newText(parent.id),
                     "$fparent_old", PrimitiveValue.newText(file.parent),
                     "$fname", PrimitiveValue.newText(pNewFile.tail()),
                     "$fname_old", PrimitiveValue.newText(file.name));
-            session.executeDataQuery(query.moveFile, tx, params)
-                    .join().getValue();
-            trans.commit().join().expectSuccess();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            txh.executeDataQuery(query.moveFile, params);
+            txh.commit();
+            return ASYNC_TRUE;
         }).join().getValue();
     }
 
     /**
      * Rename and move the existing folder to the specified location.
      * The destination folders are created as necessary.
-     * All the subobjects of the moved folder will have the new paths.
+     * All the sub-objects of the moved folder will have the new paths.
      *
      * @param oldFolderPath Current folder path
      * @param newFolderPath Desired new folder path
@@ -412,17 +445,14 @@ public class YdbFs implements AutoCloseable {
         final Path pNewContainer = new Path(pNewFolder, 1);
 
         retryContext.supplyResult(session -> {
-            final Transaction trans = session.
-                    beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
-                    .join().getValue();
-            final TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
+            final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
             // Locate the folder id
-            Folder dirSrc = locateFolder(session, tx, pOldFolder);
+            Folder dirSrc = locateFolder(txh, pOldFolder);
             if (dirSrc==null) {
                 throw new RuntimeException("Path not found: " + oldFolderPath);
             }
             // Create the destination folder
-            Folder dirDst = createFolder(session, tx, pNewContainer);
+            Folder dirDst = createFolder(txh, pNewContainer);
             // Move the folder to its destination
             Params params = Params.of(
                     "$did", PrimitiveValue.newText(dirSrc.id),
@@ -431,22 +461,39 @@ public class YdbFs implements AutoCloseable {
                     "$dname_old", PrimitiveValue.newText(dirSrc.name),
                     "$dname_new", PrimitiveValue.newText(pNewFolder.tail())
             );
-            session.executeDataQuery(query.moveFolder, tx, params)
-                    .join().getValue();
-            trans.commit().join().expectSuccess();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            txh.executeDataQuery(query.moveFolder, params);
+            txh.commit();
+            return ASYNC_TRUE;
         }).join().getValue();
     }
 
-    private Folder locateFolder(Session session, TxControl<?> tx, Path path) {
+    /**
+     * Find directory id by directory path.
+     *
+     * @param folderPath Directory path
+     * @return Directory id, or null if path was not found.
+     */
+    public String locateFolder(String folderPath) {
+        final Path pFolder = new Path(folderPath);
+        String fid = retryContext.supplyResult(session -> {
+            final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
+            // Locate the folder id
+            Folder dir = locateFolder(txh, pFolder);
+            if (dir==null) {
+                return CompletableFuture.completedFuture(Result.success(""));
+            }
+            return CompletableFuture.completedFuture(Result.success(dir.id));
+        }).join().getValue();
+        return (fid==null || fid.length()==0) ? null : fid;
+    }
+
+    private Folder locateFolder(TxHandler txh, Path path) {
         ResultSetReader rsr;
         Folder parent = Folder.ROOT;
         for (String dname : path.entries) {
             Params params = Params.of("$dname", PrimitiveValue.newText(dname),
                     "$dparent", PrimitiveValue.newText(parent.id));
-            rsr = session.executeDataQuery(query.findFolder, tx, params)
-                    .thenApply(Result::getValue)
-                    .thenApply(result -> result.getResultSet(0)).join();
+            rsr = txh.executeDataQuery(query.findFolder, params).getResultSet(0);
             if (! rsr.next()) {
                 return null;
             }
@@ -455,7 +502,7 @@ public class YdbFs implements AutoCloseable {
         return parent;
     }
 
-    private Folder createFolder(Session session, TxControl<?> tx, Path path) {
+    private Folder createFolder(TxHandler txh, Path path) {
         ResultSetReader rsr;
         Folder parent = Folder.ROOT;
         boolean exists = true;
@@ -463,9 +510,7 @@ public class YdbFs implements AutoCloseable {
             if (exists) {
                 Params params = Params.of("$dname", PrimitiveValue.newText(dname),
                         "$dparent", PrimitiveValue.newText(parent.id));
-                rsr = session.executeDataQuery(query.findFolder, tx, params)
-                        .thenApply(Result::getValue)
-                        .thenApply(result -> result.getResultSet(0)).join();
+                rsr = txh.executeDataQuery(query.findFolder, params).getResultSet(0);
                 if (rsr.next()) {
                     parent = new Folder(rsr.getColumn(0).getText(), parent.id, dname);
                 } else {
@@ -478,7 +523,7 @@ public class YdbFs implements AutoCloseable {
                         "$did", PrimitiveValue.newText(did),
                         "$dname", PrimitiveValue.newText(dname),
                         "$dparent", PrimitiveValue.newText(parent.id));
-                session.executeDataQuery(query.upsertFolder, tx, params).join().getValue();
+                txh.executeDataQuery(query.upsertFolder, params);
                 parent = new Folder(did, parent.id, dname);
             }
         }
@@ -490,25 +535,27 @@ public class YdbFs implements AutoCloseable {
      *
      * @param fid The file id to be removed.
      * @param path Path to the file to be removed.
-     * @return true, if the file was actually deleted, false otherwise (only when path==null)
      */
-    public boolean removeFile(String fid, String path) {
-        return retryContext.supplyResult(session -> {
-            Transaction trans = session.beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
-                    .join().getValue();
-            TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
-            File file = locateFile(session, tx, fid);
-            if (file==null) {
-                if (path!=null) {
+    public void removeFile(String fid, String path) {
+        retryContext.supplyResult(session -> {
+            final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
+            if (path != null) {
+                // fid by path retrieval or fid validation
+                File file;
+                if (fid==null) {
+                    file = locateFileByPath(txh, path);
+                } else {
+                    file = locateFile(txh, fid);
+                }
+                if (file==null) {
                     throw new RuntimeException("Path not found: " + path);
                 }
-                return CompletableFuture.completedFuture(Result.success(Boolean.FALSE));
             }
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid));
-            session.executeDataQuery(query.deleteFile, tx.setCommitTx(true), params)
-                    .join().getValue();
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            txh.executeDataQuery(query.deleteFile, params);
+            txh.commit();
+            return ASYNC_TRUE;
         }).join().getValue();
     }
 
@@ -523,8 +570,8 @@ public class YdbFs implements AutoCloseable {
         final Set<String> files = new HashSet<>();
         final List<Folder> folders = new ArrayList<>();
         retryContext.supplyResult(session -> {
-            final TxControl<?> tx = TxControl.onlineRo();
-            Folder dir = locateFolder(session, tx, path);
+            final TxHandler txh = new TxHandler(session, TxControl.snapshotRo());
+            Folder dir = locateFolder(txh, path);
             if (dir==null) {
                 throw new RuntimeException("Path not found: " + folderPath);
             }
@@ -533,12 +580,12 @@ public class YdbFs implements AutoCloseable {
             while (! work.empty()) {
                 Folder curDir = work.pop();
                 folders.add(curDir);
-                files.addAll(listFiles(session, tx, curDir.id));
-                for (Folder subDir : findSubFolders(session, tx, curDir.id)) {
+                files.addAll(listFiles(txh, curDir.id));
+                for (Folder subDir : findSubFolders(txh, curDir.id)) {
                     work.push(subDir);
                 }
             }
-            return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+            return ASYNC_TRUE;
         }).join().getValue();
         // Dropping files one by one, file per transaction (slow! but safer)
         for (String fid : files) {
@@ -557,64 +604,64 @@ public class YdbFs implements AutoCloseable {
             retryContext.supplyResult(session -> {
                 session.executeDataQuery(query.deleteFolders,
                         TxControl.serializableRw().setCommitTx(true), params).join().getValue();
-                return CompletableFuture.completedFuture(Result.success(Boolean.TRUE));
+                return ASYNC_TRUE;
             }).join().getValue();
         }
     }
 
-    private List<Folder> findSubFolders(Session session, TxControl<?> tx, String dparent) {
+    private List<Folder> findSubFolders(TxHandler txh, String dparent) {
         final List<Folder> retval = new ArrayList<>();
         Params params = Params.of(
                 "$dparent", PrimitiveValue.newText(dparent));
-        session.executeDataQuery(query.listFolders, tx, params)
-                .thenApply(Result::getValue)
-                .thenApply(result -> {
-                    ResultSetReader rsr = result.getResultSet(0);
-                    while (rsr.next()) {
-                        String folderId = rsr.getColumn(0).getText();
-                        if (! "/".equals(folderId)) {
-                            retval.add(new Folder(folderId,
-                                    dparent, rsr.getColumn(1).getText()));
-                        }
-                    }
-                    return true;
-                }).join();
+        ResultSetReader rsr = txh.executeDataQuery(query.listFolders, params).getResultSet(0);
+        while (rsr.next()) {
+            String folderId = rsr.getColumn(0).getText();
+            if (! "/".equals(folderId)) {
+                retval.add(new Folder(folderId,
+                        dparent, rsr.getColumn(1).getText()));
+            }
+        }
         return retval;
     }
 
-    private List<String> listFiles(Session session, TxControl<?> tx, String did) {
+    private List<String> listFiles(TxHandler txh, String did) {
         final List<String> retval = new ArrayList<>();
         Params params = Params.of(
                 "$did", PrimitiveValue.newText(did));
-        session.executeDataQuery(query.listFiles, tx, params)
-                .thenApply(Result::getValue)
-                .thenApply(result -> {
-                    ResultSetReader rsr = result.getResultSet(0);
-                    while (rsr.next()) {
-                        retval.add(rsr.getColumn(0).getText());
-                    }
-                    return true;
-                }).join();
+        ResultSetReader rsr = txh.executeDataQuery(query.listFiles, params).getResultSet(0);
+        while (rsr.next()) {
+            retval.add(rsr.getColumn(0).getText());
+        }
         return retval;
     }
 
+    /**
+     * Add the version checkpoint to the specified file.
+     *
+     * @param fid File id
+     * @param path File path
+     * @param message
+     * @param author
+     * @param stamp
+     * @return
+     */
     public String checkpoint(String fid, String path, 
             String message, String author, Instant stamp) {
         return retryContext.supplyResult(session -> {
-            Transaction trans = session.beginTransaction(Transaction.Mode.SERIALIZABLE_READ_WRITE)
-                    .join().getValue();
-            TxControl<?> tx = TxControl.id(trans).setCommitTx(false);
-            File file = locateFile(session, tx, fid);
+            final TxHandler txh = new TxHandler(session, TxControl.serializableRw());
+            File file;
+            if (fid==null) {
+                file = locateFileByPath(txh, path);
+            } else {
+                file = locateFile(txh, fid);
+            }
             if (file==null) {
-                if (path!=null) {
-                    throw new RuntimeException("Path not found: " + path);
-                }
-                return CompletableFuture.completedFuture(Result.success(""));
+                throw new RuntimeException("Path not found: " + path);
             }
             final String versionId;
             if (file.frozen) {
-                String bid = lookupBlobCur(session, tx, file.id);
-                final VersionDao dao = new VersionDao(session, tx, "" /*unused*/, file.id);
+                String bid = lookupBlobCur(txh, file.id);
+                final VersionDao dao = new VersionDao(txh, "" /*unused*/, file.id);
                 dao.frozen = true;
                 dao.vid = null;
                 dao.message = message;
@@ -629,10 +676,10 @@ public class YdbFs implements AutoCloseable {
                         "$author", PrimitiveValue.newText(author),
                         "$message", PrimitiveValue.newText(message)
                 );
-                session.executeDataQuery(query.freezeVersion, tx, params).join().getValue();
+                txh.executeDataQuery(query.freezeVersion, params);
                 versionId = file.version;
             }
-            trans.commit().join().expectSuccess();
+            txh.commit();
             return CompletableFuture.completedFuture(Result.success(versionId));
         }).join().getValue();
     }
@@ -734,8 +781,7 @@ public class YdbFs implements AutoCloseable {
     }
 
     private class VersionDao {
-        final Session session;
-        final TxControl<?> tx;
+        final TxHandler txh;
         final String path;
         final String fid;
         String vid;
@@ -743,9 +789,8 @@ public class YdbFs implements AutoCloseable {
         String author;
         String message;
 
-        private VersionDao(Session session, TxControl<?> tx, String path, String fid) {
-            this.session = session;
-            this.tx = tx;
+        private VersionDao(TxHandler txh, String path, String fid) {
+            this.txh = txh;
             this.path = path;
             this.fid = fid;
         }
@@ -753,7 +798,7 @@ public class YdbFs implements AutoCloseable {
         private void createFile(List<byte[]> data) {
             final Path myPath = new Path(this.path);
             final Path dirPath = new Path(myPath, 1);
-            Folder dir = createFolder(session, tx, dirPath);
+            Folder dir = createFolder(txh, dirPath);
             String myVid = createVersion(data);
             Params params = Params.of(
                     "$fid", PrimitiveValue.newText(fid),
@@ -761,7 +806,7 @@ public class YdbFs implements AutoCloseable {
                     "$fname", PrimitiveValue.newText(myPath.tail()),
                     "$vid", PrimitiveValue.newText(myVid)
             );
-            session.executeDataQuery(query.upsertFile, tx, params).join().getValue();
+            txh.executeDataQuery(query.upsertFile, params);
         }
 
         private String createVersion(List<byte[]> data) {
@@ -788,7 +833,7 @@ public class YdbFs implements AutoCloseable {
                     "$fid", PrimitiveValue.newText(fid),
                     "$vid", PrimitiveValue.newText(vid)
             );
-            session.executeDataQuery(query.cleanupVersion, tx, params).join().getValue();
+            txh.executeDataQuery(query.cleanupVersion, params);
         }
 
         private void upsertVersion(String bid, Instant stamp) {
@@ -801,7 +846,7 @@ public class YdbFs implements AutoCloseable {
                     "$author", PrimitiveValue.newText(author),
                     "$message", PrimitiveValue.newText(message)
             );
-            session.executeDataQuery(query.upsertVersion, tx, params).join().getValue();
+            txh.executeDataQuery(query.upsertVersion, params);
         }
 
         private void upsertVersion(List<byte[]> data) {
@@ -815,7 +860,7 @@ public class YdbFs implements AutoCloseable {
                         "$val", PrimitiveValue.newBytes(b)
                 );
                 // TODO: batch upsert
-                session.executeDataQuery(query.upsertBytes, tx, params).join().getValue();
+                txh.executeDataQuery(query.upsertBytes, params);
                 ++pos;
             }
         }
@@ -825,6 +870,34 @@ public class YdbFs implements AutoCloseable {
         String fullName = clazz.getName();
         String shortName = clazz.getSimpleName();
         return fullName.substring(0, fullName.length() - (shortName.length() + 1));
+    }
+
+    public static class TxHandler {
+        final Session session;
+        TxControl<?> tx;
+        String txId;
+        static CommitTxSettings commitTxSettings = new CommitTxSettings();
+
+        TxHandler(Session session, TxControl<?> tx) {
+            this.session = session;
+            this.tx = tx.setCommitTx(false);
+            this.txId = null;
+        }
+
+        DataQueryResult executeDataQuery(String query, Params params) {
+            DataQueryResult result = session.executeDataQuery(query, tx, params).join().getValue();
+            if (txId==null) {
+                txId = result.getTxId();
+                tx = TxControl.id(txId).setCommitTx(false);
+            }
+            return result;
+        }
+
+        void commit() {
+            if (txId != null) {
+                session.commitTransaction(txId, commitTxSettings).join().expectSuccess();
+            }
+        }
     }
 
     public static class Path {
