@@ -12,6 +12,7 @@ import java.util.stream.Collectors;
 import org.apache.zeppelin.conf.ZeppelinConfiguration;
 import org.apache.zeppelin.notebook.Note;
 import org.apache.zeppelin.notebook.NoteInfo;
+import org.apache.zeppelin.notebook.Paragraph;
 import org.apache.zeppelin.notebook.repo.NotebookRepoSettingsInfo;
 import org.apache.zeppelin.notebook.repo.NotebookRepoWithVersionControl;
 import org.apache.zeppelin.user.AuthenticationInfo;
@@ -173,7 +174,12 @@ public class YdbNotebookRepo implements NotebookRepoWithVersionControl {
     }
 
     private Note fromBytes(byte[] data, String noteId, String notePath) throws IOException {
-        Note note = Note.fromJson(new String(data, charset));
+        Note note = Note.getGSON().fromJson(new String(data, charset), Note.class);
+        for (Paragraph p : note.getParagraphs()) {
+            p.settings.convertOldInput();
+        }
+        note.getInfo().remove("isRunning");
+        note.postProcessParagraphs();
         note.setId(noteId);
         note.setPath(notePath);
         return note;
