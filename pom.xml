@@ -7,7 +7,7 @@
 
     <groupId>yandex.cloud</groupId>
     <artifactId>zeppelin-notebookrepo-ydb</artifactId>
-    <version>1.1-SNAPSHOT</version>
+    <version>1.1</version>
     <packaging>jar</packaging>
 
     <name>Zeppelin: Plugin YdbNotebookRepo</name>

@@ -27,8 +27,8 @@ The schema of all the tables is defined as `zeppelin`. It can be changed to anot
 The plugin JAR file (for example, `zeppelin-notebookrepo-ydb-1.0.jar`) should be put into the subdirectory `NotebookRepo/YdbNotebookRepo` of the Zeppelin's plugins directory (for example, `/usr/lib/zeppelin/plugins`).
 
 ```bash
-sudo mkdirs /usr/lib/zeppelin/plugins/NotebookRepo/YdbNotebookRepo
-sudo cp zeppelin-notebookrepo-ydb-1.0.jar /usr/lib/zeppelin/plugins/NotebookRepo/YdbNotebookRepo/
+sudo mkdir -pv /usr/lib/zeppelin/plugins/NotebookRepo/YdbNotebookRepo
+sudo cp -v zeppelin-notebookrepo-ydb-*.jar /usr/lib/zeppelin/plugins/NotebookRepo/YdbNotebookRepo/
 ```
 
 ## 3. Enable the plugin
@@ -93,12 +93,12 @@ To run the tool, the configuration file is needed, containing the settings simil
 To import the notebooks from the specified directory, the following command can be used:
 
 ```bash
-java -jar zeppelin-notebookrepo-ydb-1.0.jar config.xml import /var/lib/zeppelin/notebook
+java -jar zeppelin-notebookrepo-ydb-*.jar config.xml import /var/lib/zeppelin/notebook
 ```
 
 
 To export the notebooks from YDB to the specified directory, the following command can be used:
 
 ```bash
-java -jar zeppelin-notebookrepo-ydb-1.0.jar config.xml export /tmp/notebooks
+java -jar zeppelin-notebookrepo-ydb-*.jar config.xml export /tmp/notebooks
 ```
